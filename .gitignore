@@ -1,0 +1,76 @@
+# --- Benchmark scratch (2.7 GB, all of it local) ----------------------------
+# bench/ is where the whisper accuracy comparison was run. It holds ggml model
+# weights, a Python venv, synthetic `say`-generated test clips, and a real
+# recording of a real class. None of it belongs in a repo: the weights and venv
+# are re-downloadable, and the recording is other people's voices.
+bench/
+
+# --- Recordings, transcripts, notes -----------------------------------------
+# Nothing this system produces is source. Lecture audio and its transcripts are
+# recordings of identifiable people; the note vault is personal coursework.
+# The real vault lives on the PC (C:\Users\Kieran\Notables), but keep these
+# patterns so a stray copy can never be staged by accident.
+Recordings/
+Outbox/
+Vault/
+Notes/
+Transcripts/
+Captures/
+Course Materials/
+inbox/
+_index.json
+_courses.json
+*.m4a
+*.mp3
+*.wav
+*.aiff
+*.aac
+*.caf
+*.mov
+*.whisper
+
+# --- Credentials -------------------------------------------------------------
+# The shared bearer token and the Canvas session cookie live in ~/.notables/,
+# outside the repo. These patterns are belt and braces.
+.env
+.env.*
+.notables/
+*token*.txt
+canvas-session.json
+*.pem
+*.key
+*.p12
+*.mobileprovision
+*.entitlements.local
+
+# --- Model weights and caches ------------------------------------------------
+*.bin
+*.pt
+*.ckpt
+*.safetensors
+*.onnx
+.notables-models/
+.notables-venv/
+
+# --- Build output ------------------------------------------------------------
+Notables.app/
+build/
+dist/
+.build/
+DerivedData/
+*.dSYM/
+node_modules/
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# --- Editor / OS -------------------------------------------------------------
+.DS_Store
+*.bak
+*.swp
+*~
+.idea/
+.vscode/
+xcuserdata/
+*.xcuserstate

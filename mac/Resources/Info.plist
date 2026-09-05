@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>                  <string>Notables</string>
+    <key>CFBundleDisplayName</key>           <string>Notables</string>
+    <key>CFBundleIdentifier</key>            <string>com.kierankelly.notables</string>
+    <key>CFBundleExecutable</key>            <string>Notables</string>
+    <key>CFBundleIconFile</key>              <string>AppIcon</string>
+    <key>CFBundlePackageType</key>           <string>APPL</string>
+    <key>CFBundleShortVersionString</key>    <string>1.0</string>
+    <key>CFBundleVersion</key>               <string>1</string>
+    <key>LSMinimumSystemVersion</key>        <string>26.0</string>
+    <key>NSHighResolutionCapable</key>       <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Notables records your classes so it can transcribe them on this Mac.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Notables transcribes your recordings entirely on this Mac. Nothing is sent to Apple.</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>   <true/>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>100.69.103.126</key>
+            <dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+        </dict>
+    </dict>
+</dict>
+</plist>

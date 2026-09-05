@@ -1,0 +1,167 @@
+# Notables Wire Protocol — v1
+
+**This file is the source of truth.** The Mac app, the Windows note server, and the
+iOS Shortcut are built by different agents against this contract. Change it here first,
+then update every implementation.
+
+## Endpoints
+
+Base URL: `http://100.69.103.126:8787` (Windows PC over Tailscale)
+Auth: `Authorization: Bearer <token>` on every request. Token lives in
+`~/.notables/token` on the Mac and `%USERPROFILE%\.notables\token` on the PC.
+
+### `POST /api/ingest` — announce a finished recording (step 1 of 2)
+The Mac uploads the **audio**; the PC does the authoritative transcription on its GPU.
+```jsonc
+{
+  "id":          "0F8C…",         // UUID, client-generated, idempotency key
+  "title":       "Chem 101 - Thermo",  // the filename the user typed
+  "recordedAt":  "2026-09-04T13:05:00Z",       // ISO8601 UTC, recording START
+  "durationSec": 3312,
+  "locale":      "en_US",
+  "device":      "kierans-macbook-air",
+  "audioBytes":  29344512,        // so the server can verify the upload completed
+  "audioFormat": "m4a",           // AAC, 16 kHz mono
+  "draftTranscript": "Welcome to Chemistry 101…"  // the Mac's live on-device pass
+}
+```
+→ `202 {"ok":true,"id":"0F8C…","state":"awaiting_audio"}`
+
+`draftTranscript` is Apple's fast on-device result. It is **a preview and a fallback, never
+the final text** — the app shows it immediately so a note isn't blank while the GPU works,
+and the server falls back to it if whisper fails outright. Re-POSTing the same `id` is a
+no-op returning the current state.
+
+### `PUT /api/audio/{id}` — the recording itself (step 2 of 2)
+Raw body, `Content-Type: audio/mp4`. No multipart — the server is Node stdlib.
+Server writes it to `Audio/`, verifies the length against `audioBytes`, then queues
+transcription. → `202 {"ok":true,"state":"transcribing"}`
+
+Resumable: `GET /api/audio/{id}/status` → `{"received":12345678,"expected":29344512}`.
+The Mac may retry the PUT from scratch; the server overwrites.
+
+### `POST /api/capture` — quick voice capture (iPhone Action Button)
+```jsonc
+{ "text":"remind me chem problems 12 to 20 are due friday",
+  "kind":"auto",            // auto | todo | homework | note
+  "capturedAt":"2026-09-04T18:22:00Z", "device":"iphone-17-pro",
+  "id":"…" }                // OPTIONAL — server mints one when absent
+```
+→ `202 {"ok":true,"id":"…","state":"queued"}`
+`auto` lets Claude decide between todo / homework / note and file it accordingly.
+
+**`id` must stay optional here.** Unlike `/api/ingest`, this endpoint is called from an iOS
+Shortcut, and **Shortcuts has no UUID generator** — the client genuinely cannot supply one.
+The server mints an id and returns it. Verified behaviour, not an aspiration.
+
+`capturedAt` arrives as ISO 8601 with a **UTC offset** (`…T11:34:05-05:00`), which is what
+Shortcuts emits — not a `Z` suffix. The server normalises it.
+
+The `202` returns **before** classification finishes, so the caller learns the item was
+accepted, never what it was filed as. That is deliberate: the phone gets an instant
+confirmation and the Mac app shows the classified result over SSE moments later.
+
+### `GET /api/notes` — the index
+```jsonc
+{ "courses":[{"name":"Chemistry 101","noteCount":12,"lastClass":"2026-09-04"}],
+  "notes":[{ "id","title","course","section","topic","classDate","recordedAt",
+             "durationSec","state","tags":[],"summary","actionItemCount",
+             "notePath","transcriptPath","updatedAt" }],
+  "todos":[{ "id","text","due","course","done","source" }] }
+```
+
+### `GET /api/note/{id}` → `{ …meta, "markdown":"…", "transcript":"…" }`
+### `GET /api/events` — Server-Sent Events, the live-update channel
+```
+event: note     data: {…note object…}     // created or updated
+event: state    data: {"id":"…","state":"processing","detail":"asking claude"}
+event: todos    data: {"todos":[…]}
+: keepalive                                // every 20s
+```
+### `POST /api/note/{id}/reprocess` — re-run the Claude pass on a stored transcript
+### `GET  /api/health` → `{"ok":true,"version","vault","queueDepth","claudeOk"}`
+
+## Note lifecycle (`state`)
+`awaiting_audio` → `transcribing` → `processing` → `ready`, or → `failed` at any step.
+Nothing is ever discarded: the uploaded audio stays in `Audio/`, the whisper transcript is
+written to `Transcripts/` **before** Claude is called, and the raw payload stays in
+`inbox/` until the note reaches `ready`. Every step is retryable from what's on disk.
+
+## Transcription (on the PC)
+`faster-whisper` **large-v3**, float16, CUDA — the PC has an RTX 3060 Ti (8 GB), which fits
+the model in ~5 GB and runs roughly 10–20× realtime. Requirements:
+- `vad_filter=True` to skip silence, `beam_size=5`.
+- **`initial_prompt` is a real accuracy lever and must be used.** Seed it with the course
+  name plus technical vocabulary already seen in that course (accumulate a per-course
+  glossary in `_courses.json` from previous notes' key terms). This is what makes
+  "Le Chatelier", "chemiosmotic" and "cytochrome c oxidase" come out right.
+- Keep whisper's own segment timestamps in the transcript file as a sidecar
+  (`Transcripts/<Course>/<name>.json`) so a note can be traced back to the audio.
+
+## Vault layout — `C:\Users\Kieran\Notables`
+```
+Notes/<Course>/<YYYY-MM-DD> — <Topic>.md      AI pass (summary, key terms, todos)
+Transcripts/<Course>/<YYYY-MM-DD> — <Topic>.txt   full verbatim text (whisper large-v3)
+Transcripts/<Course>/<YYYY-MM-DD> — <Topic>.json  whisper segments + timestamps
+Audio/<id>.m4a                                 the uploaded recording
+Captures/<YYYY-MM>.md                          quick captures from the phone
+_index.json      note + todo registry (the thing GET /api/notes serves)
+_courses.json    course registry — keeps Claude from inventing near-duplicate courses
+inbox/<id>.json  raw ingest payload, deleted once state=ready
+logs/server.log
+```
+
+## Note front-matter
+```yaml
+---
+id: 0F8C…
+title: Second Law of Thermodynamics
+course: Chemistry 101
+section: "4.3"          # textbook/lecture section, if the lecturer said one; else null
+class_date: 2026-09-04  # the DAY OF THE CLASS — notes sort by this
+recorded_at: 2026-09-04T13:05:00Z
+duration_min: 55
+tags: [entropy, gibbs-free-energy]
+transcript: ../../Transcripts/Chemistry 101/2026-09-04 — Second Law of Thermodynamics.txt
+---
+```
+
+## Note body (exactly these sections, in this order)
+`# Title` · italic meta line · `## Summary` · `## Key Terms` · `## Notes` ·
+`## Action Items` (checkboxes) · `## Full Transcript` (relative link).
+Omit `## Action Items` only when there are genuinely none.
+
+---
+
+## Canvas + course materials
+
+Full detail, including why the auth works the way it does, is in
+[CANVAS.md](CANVAS.md). Summary of the wire surface:
+
+| Method | Path | Body / query | Returns |
+|---|---|---|---|
+| `GET`  | `/api/canvas/status` | — | `{ok, canvas:{connected, hasSession, host, user, expiredAt, error}}` |
+| `POST` | `/api/canvas/session` | `{host, cookie}` | `{ok, user, status}`; **400 and stores nothing** if Canvas rejects it |
+| `POST` | `/api/canvas/disconnect` | — | `{ok, canvas}` |
+| `GET`  | `/api/canvas/probe` | — | per-course readability diagnostic |
+| `POST` | `/api/canvas/sync` | `{full?, courseIds?, reglossary?}` | `202 {ok, started}` — runs in the background |
+| `GET`  | `/api/materials` | — | `{ok, courses:[summary], syncing, lastSync}` |
+| `GET`  | `/api/materials` | `?course=NAME` | `{ok, course, materials:<manifest>}` |
+| `GET`  | `/api/material` | `?course=NAME&id=FILEID` | `{ok, file, text, canvasUrl}` |
+| `GET`/`HEAD` | `/api/material/file` | `?course=NAME&id=FILEID` | the raw file bytes, real `Content-Type` |
+
+`/api/health` gains `canvas` (the status object) and `canvasSync`.
+
+### SSE `canvas` event
+
+Sent on connect/disconnect, during a sync, and when a glossary pass completes:
+
+```json
+{"syncing": true, "phase": "files", "course": "General Chemistry I", "done": 3, "total": 11, "item": "Lecture 5"}
+{"syncing": false, "connected": true, "lastSync": { }}
+{"glossary": {"course": "General Chemistry I", "added": 52, "total": 61}}
+```
+
+`expiredAt` on a `canvas` event or in `/api/canvas/status` means **the session is
+dead and the user must reconnect**. Clients must show this; treating it as "no new
+materials" is the specific failure this field exists to prevent.
