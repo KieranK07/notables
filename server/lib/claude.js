@@ -56,6 +56,20 @@ const CAPTURE_SCHEMA = {
   required: ['kind', 'text', 'course', 'due'],
 };
 
+// How much of the Mac's rough live draft is enough to recognise a subject. The whole
+// point of this pass is that it runs BEFORE whisper, so it has to be cheap.
+const COURSE_MATCH_SAMPLE = 3000;
+
+const COURSE_MATCH_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    course: { type: ['string', 'null'] },
+    confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+  },
+  required: ['course', 'confidence'],
+};
+
 const GLOSSARY_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -174,6 +188,34 @@ function normaliseGlossary(data) {
     out.push(s);
   }
   return out.slice(0, 60);
+}
+
+/**
+ * Which known course is this recording from? Deliberately a closed-list choice: the
+ * model picks a name we already have or says null. Naming a new course is the job of
+ * the note pass later on, once whisper has produced something worth reading.
+ */
+function buildCourseMatchPrompt(title, draft, courses) {
+  return [
+'Identify which of the student\'s existing courses this class recording belongs to.',
+'',
+'COURSES - answer with one of these names copied EXACTLY, or null:',
+JSON.stringify(courses),
+'',
+'The student names recordings in a hurry, mid-class, on a laptop. Titles are',
+'abbreviations, nicknames, dates, or mostly noise - "chem9/7(halfway through class)",',
+'"bio tues", "2nd half". Judge by the SUBJECT MATTER of the transcript first and the',
+'title second. A title that only abbreviates a course name ("chem" for "Chemistry 101")',
+'is still a match.',
+'',
+'Answer null only if the transcript is genuinely none of the listed courses. Do not',
+'invent a course name, and do not answer with a course that is not in the list above.',
+'',
+'TITLE: ' + asString(title),
+'',
+'TRANSCRIPT - rough live draft, first ' + COURSE_MATCH_SAMPLE + ' characters:',
+asString(draft).slice(0, COURSE_MATCH_SAMPLE),
+  ].join('\n');
 }
 
 function buildCapturePrompt(payload, courses) {
@@ -315,6 +357,25 @@ async function ask(prompt, schema) {
   return { data: extractJson(res.text), meta: res.meta };
 }
 
+/**
+ * Resolve a recording to one of `courses`, or null. The answer is validated against the
+ * list before it is returned - a model that names something not on the list is treated
+ * as "no match", because the only thing downstream of this is which glossary biases
+ * whisper, and a wrong glossary is worse than none.
+ */
+async function matchCourse(title, draft, courses) {
+  if (!Array.isArray(courses) || !courses.length) return null;
+  const { data, meta } = await ask(buildCourseMatchPrompt(title, draft, courses), COURSE_MATCH_SCHEMA);
+  const raw = asString(data && data.course).trim();
+  if (!raw || /^(null|none)$/i.test(raw)) return null;
+  const hit = courses.find(c => String(c).toLowerCase() === raw.toLowerCase());
+  if (!hit) {
+    log.warn('claude matched a course that does not exist:', JSON.stringify(raw), '- ignoring');
+    return null;
+  }
+  return { course: hit, confidence: asString(data.confidence) || 'unknown', meta };
+}
+
 // ------------------------------------------------------------- normalising
 function pickCourse(raw, known) {
   const s = asString(raw).trim();
@@ -400,8 +461,9 @@ function setHealth(ok) { claudeOk = ok; lastProbe = Date.now(); }
 function lastHealth() { return claudeOk; }
 
 module.exports = {
-  LECTURE_SCHEMA, GLOSSARY_SCHEMA, CAPTURE_SCHEMA,
+  LECTURE_SCHEMA, GLOSSARY_SCHEMA, CAPTURE_SCHEMA, COURSE_MATCH_SCHEMA,
   buildLecturePrompt, buildCapturePrompt, buildGlossaryPrompt, normaliseGlossary,
+  buildCourseMatchPrompt, matchCourse,
   ask, extractJson, normaliseLecture, normaliseCapture,
   checkHealth, setHealth, lastHealth,
 };

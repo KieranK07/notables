@@ -166,6 +166,44 @@ async function runNote(job) {
 }
 
 /**
+ * Which course's glossary should bias whisper?
+ *
+ * The token heuristic is free and correct whenever the title actually carries the course
+ * name, so it goes first. Claude is the fallback for the titles people really type -
+ * "chem9/7(halfway through class)" scored 0.5 against "Chemistry 101" and lost a whole
+ * lecture's worth of vocabulary biasing - where the subject is obvious from the words but
+ * matches no token.
+ *
+ * This runs BEFORE transcription, because initial_prompt is an input to whisper, so it is
+ * on the critical path: a small prompt, a capped draft sample, and any failure at all
+ * degrades to "no glossary" rather than stopping the lecture.
+ */
+async function resolveCourse(payload, draft, courses) {
+  if (!courses.length) return null;
+
+  const heuristic = whisper.guessCourse(payload.title, draft, courses);
+  if (heuristic) return heuristic;
+  if (!asString(payload.title).trim() && !draft.trim()) return null;
+
+  const t0 = Date.now();
+  try {
+    const hit = await claude.matchCourse(payload.title, draft, courses);
+    const secs = Math.round((Date.now() - t0) / 1000);
+    if (!hit) {
+      log.info('no course match for', JSON.stringify(asString(payload.title)),
+        '- transcribing without a glossary (claude', secs + 's)');
+      return null;
+    }
+    log.info('course matched by claude:', hit.course, '|', hit.confidence, 'confidence |',
+      JSON.stringify(asString(payload.title)), '| ' + secs + 's');
+    return hit.course;
+  } catch (e) {
+    log.warn('claude course match failed -', e.message, '- transcribing without a glossary');
+    return null;
+  }
+}
+
+/**
  * Run whisper and write the transcript to disk. Returns the text, or null after
  * calling fail(). Falls back to Apple's draft only when whisper fails outright -
  * a draft must never overwrite a real whisper transcript.
@@ -186,7 +224,7 @@ async function transcribePhase(note, payload) {
 
   // Bias whisper with this course's accumulated vocabulary.
   const courses = store.courseNames().filter(n => n !== 'Uncategorized');
-  const guess = whisper.guessCourse(payload.title, draft, courses);
+  const guess = await resolveCourse(payload, draft, courses);
   const initialPrompt = whisper.buildInitialPrompt(guess, store.glossaryFor(guess), payload.title);
 
   setState(note, 'transcribing', 'transcribing on the gpu');
