@@ -35,6 +35,10 @@ struct DetailColumn: View {
                     draftFallbackBanner(note)
                 }
 
+                if note.state == .ready, (note.durationSec ?? 0) > 0 {
+                    RecordingPlayer(player: model.player, note: note)
+                }
+
                 if showTranscript {
                     transcriptSection
                 } else if let md = model.detail?.markdown, !md.isEmpty {

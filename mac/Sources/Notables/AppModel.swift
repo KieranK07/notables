@@ -20,6 +20,8 @@ final class AppModel: ObservableObject {
     @Published var selectedTodoID: String?
     @Published var pendingUploads: Int = 0
     @Published var uploadingID: String?
+    /// Audio still held on this Mac. Recordings the PC has finished with are released.
+    @Published var localAudioBytes: Int = 0
 
     // --- canvas ---------------------------------------------------------
     @Published var canvas: NotesClient.CanvasStatus?
@@ -35,9 +37,12 @@ final class AppModel: ObservableObject {
     }
 
     let recorder = Recorder()
+    let player = AudioPlayer()
     private let client = NotesClient()
     private var eventTask: Task<Void, Never>?
     private var outboxTask: Task<Void, Never>?
+    private var reconcileTask: Task<Void, Never>?
+    private var activeObserver: NSObjectProtocol?
 
     enum Selection: Hashable { case allNotes, todos, calendar, materials, course(String) }
 
@@ -89,10 +94,26 @@ final class AppModel: ObservableObject {
 
     func onAppear() {
         guard eventTask == nil else { return }
+        // The recording is on the PC, so playback has to go and get it.
+        player.fetch = { [client] id in try await client.downloadAudio(id: id) }
         eventTask = Task { await self.listen() }
         outboxTask = Task { await self.drainOutboxLoop() }
         Task { await refresh() }
         Task { await self.warmUpSpeechModel() }
+        Task { await self.reconcileLocalAudio() }
+        reconcileTask = Task { await self.reconcileLoop() }
+
+        // Coming back to the app is the other moment worth re-checking: if the event
+        // stream died while the Mac was idle, this is what makes the UI honest again.
+        activeObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.refresh()
+                await self.reconcileLocalAudio()
+            }
+        }
         pendingUploads = Outbox.pending().count
     }
 
@@ -130,6 +151,7 @@ final class AppModel: ObservableObject {
             case .note(let note):
                 upsert(note)
                 if note.id == selectedNoteID { await loadDetail(note.id) }
+                if note.state == .ready { await reclaimLocalAudio(for: note.id) }
             case .todos(let list):
                 todos = list
             case .state(let id, let state, _):
@@ -210,6 +232,8 @@ final class AppModel: ObservableObject {
     // MARK: - Detail
 
     func select(_ id: String?) {
+        // A lecture must not carry on playing under a note you have navigated away from.
+        if player.noteID != id { player.stop() }
         selectedNoteID = id
         detail = nil
         guard let id else { return }
@@ -285,6 +309,61 @@ final class AppModel: ObservableObject {
         currentRecordingID = nil
     }
 
+    // MARK: - Local audio
+
+    /// Every recording still on this Mac that the PC has finished with.
+    ///
+    /// The Mac used to keep a copy of every lecture forever, which is a term of audio on
+    /// a laptop SSD. It now keeps one only until the PC says `safeToDelete` — audio
+    /// verified there, whisper transcript written, note written. After that the recording
+    /// is fetched on demand from `GET /api/audio/{id}`.
+    func reconcileLocalAudio() async {
+        let recordings = LocalRecordings.all()
+        guard !recordings.isEmpty else { return }
+        var freed = 0
+        for rec in recordings {
+            guard await canRelease(rec) else { continue }
+            if LocalRecordings.remove(rec) { freed += rec.bytes }
+        }
+        localAudioBytes = LocalRecordings.all().reduce(0) { $0 + $1.bytes }
+        if freed > 0 { banner = "Freed \(ByteCountFormatter.string(fromByteCount: Int64(freed), countStyle: .file)) — those lectures live on the PC now." }
+    }
+
+    /// Releasing audio must not depend on the event stream.
+    ///
+    /// The SSE `note` event is the fast path, but it is a *push* channel: it has been seen
+    /// silently absent — app running, zero open connections, `sseClients: 0` on the server
+    /// — after the Mac sat idle for a few hours. A recording whose note went ready in that
+    /// window would otherwise sit on disk forever. This poll is the floor: cheap when the
+    /// directory is empty, and it costs one request per held recording per minute when it
+    /// is not.
+    private func reconcileLoop() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(60))
+            if !LocalRecordings.all().isEmpty { await reconcileLocalAudio() }
+        }
+    }
+
+    /// The same check for one note, run the moment it reaches `ready` over SSE.
+    private func reclaimLocalAudio(for id: String) async {
+        guard let rec = LocalRecordings.all().first(where: { $0.id == id }), await canRelease(rec) else { return }
+        guard LocalRecordings.remove(rec) else { return }
+        localAudioBytes = LocalRecordings.all().reduce(0) { $0 + $1.bytes }
+        banner = "Freed \(ByteCountFormatter.string(fromByteCount: Int64(rec.bytes), countStyle: .file)) — that lecture lives on the PC now."
+    }
+
+    /// Deleting the only copy of a lecture is unforgiving, so this refuses on anything it
+    /// is not certain about: the file being written right now, anything still queued for
+    /// upload, and — the one that actually matters — anything the *server* has not
+    /// explicitly cleared. `safeToDelete` is never inferred locally, and an unreachable
+    /// PC means "keep it", because `audioStatus` throwing is not consent.
+    private func canRelease(_ rec: LocalRecordings.Item) async -> Bool {
+        if rec.id == currentRecordingID { return false }
+        if Outbox.pending().contains(where: { $0.id == rec.id }) { return false }
+        guard let status = try? await client.audioStatus(id: rec.id) else { return false }
+        return status.safeToDelete
+    }
+
     // MARK: - Outbox
 
     private func drainOutboxLoop() async {
@@ -300,17 +379,21 @@ final class AppModel: ObservableObject {
                 try await client.ingest(payload)
 
                 // The audio is the point now — the PC transcribes it, so the note isn't
-                // real until these bytes land.
-                if let path = payload.localAudioPath {
-                    let url = URL(fileURLWithPath: path)
-                    if FileManager.default.fileExists(atPath: path) {
-                        uploadingID = payload.id
-                        defer { uploadingID = nil }
-                        try await client.uploadAudio(id: payload.id, from: url)
-                    } else {
-                        banner = "Audio for “\(payload.title)” is missing — sent the draft transcript only."
-                    }
+                // real until these bytes land. An entry therefore only leaves the outbox
+                // once the audio is on the PC, or is provably gone from this Mac.
+                guard let path = payload.localAudioPath else {
+                    banner = "“\(payload.title)” uploaded without its audio — retrying."
+                    continue
                 }
+                guard FileManager.default.fileExists(atPath: path) else {
+                    banner = "Audio for “\(payload.title)” is missing from this Mac — sent the draft transcript only."
+                    Outbox.remove(payload.id)
+                    continue
+                }
+                uploadingID = payload.id
+                defer { uploadingID = nil }
+                try await client.uploadAudio(id: payload.id, from: URL(fileURLWithPath: path))
+
                 Outbox.remove(payload.id)
                 connection = .online
             } catch {
@@ -352,6 +435,32 @@ final class AppModel: ObservableObject {
 }
 
 /// Durable local queue of recordings waiting to reach the PC.
+/// The recordings directory on this Mac, addressed by note id — the recorder writes
+/// `<id>.m4a`, so the id *is* the filename and no extra bookkeeping is needed.
+enum LocalRecordings {
+    struct Item: Sendable {
+        var id: String
+        var url: URL
+        var bytes: Int
+    }
+
+    static func all() -> [Item] {
+        let dir = Recorder.recordingsDirectory
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+        return files.filter { $0.pathExtension.lowercased() == "m4a" }.map {
+            Item(id: $0.deletingPathExtension().lastPathComponent,
+                 url: $0,
+                 bytes: (try? $0.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+        }
+    }
+
+    static func remove(_ item: Item) -> Bool {
+        do { try FileManager.default.removeItem(at: item.url); return true }
+        catch { return false }
+    }
+}
+
 enum Outbox {
     static let dir: URL = {
         let d = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -360,8 +469,18 @@ enum Outbox {
         return d
     }()
 
+    /// What actually goes on disk: the wire payload plus the local-only fields that
+    /// `IngestPayload.CodingKeys` deliberately drops. `CodingKeys` governs decoding as
+    /// well as encoding, so a path left to the synthesized coder comes back nil and the
+    /// audio upload is skipped — silently, which is how a whole lecture went text-only.
+    private struct Record: Codable {
+        var payload: NotesClient.IngestPayload
+        var localAudioPath: String?
+    }
+
     static func save(_ p: NotesClient.IngestPayload) {
-        guard let data = try? JSONEncoder().encode(p) else { return }
+        let record = Record(payload: p, localAudioPath: p.localAudioPath)
+        guard let data = try? JSONEncoder().encode(record) else { return }
         try? data.write(to: dir.appendingPathComponent("\(p.id).json"), options: .atomic)
     }
 
@@ -372,8 +491,11 @@ enum Outbox {
     static func pending() -> [NotesClient.IngestPayload] {
         let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         return files.filter { $0.pathExtension == "json" }.compactMap {
-            guard let d = try? Data(contentsOf: $0) else { return nil }
-            return try? JSONDecoder().decode(NotesClient.IngestPayload.self, from: d)
+            guard let d = try? Data(contentsOf: $0),
+                  let record = try? JSONDecoder().decode(Record.self, from: d) else { return nil }
+            var payload = record.payload
+            payload.localAudioPath = record.localAudioPath
+            return payload
         }
     }
 }

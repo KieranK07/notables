@@ -15,7 +15,12 @@ independently-built components; do not change it unilaterally.
 2. **The verbatim transcript is written to disk before Claude is called.** Never let an AI
    failure lose a lecture.
 3. **Zero npm/pip dependencies in `server/`.** Node stdlib only.
-4. **Audio stays on the Mac.** Only text crosses the network.
+4. **The PC is the only machine that keeps audio.** The Mac records to
+   `~/Documents/Notables/Recordings/`, uploads, and then *releases* its copy once the
+   server reports `safeToDelete` — audio verified on the PC **and** the note at `ready`,
+   so the transcript and the markdown exist too. Playback fetches the recording back from
+   `GET /api/audio/{id}`. Never delete a local recording on anything weaker than that
+   flag, and never infer the flag from an SSE event. See **docs/PROTOCOL.md**.
 5. **The Canvas session cookie is a full-account credential.** It lives only in
    `%USERPROFILE%\.notables\canvas-session.json`, is never logged, never written
    into the vault, and is never sent to any host but `CANVAS_HOST`. It expires, and
@@ -69,6 +74,27 @@ independently-built components; do not change it unilaterally.
   *before* the converter setup throws, leaving a ~557-byte stub that reads as an empty
   recording. `makeRecordingFile` now descends 48k → 32k → encoder default and deletes the
   stub between attempts.
+
+- **A property left out of `CodingKeys` is dropped on the way *in*, not just out.**
+  `IngestPayload.localAudioPath` was documented "local only; not sent" and omitted from
+  `CodingKeys` — which governs decoding too, so the outbox wrote the payload to disk
+  without the path and read it back as `nil`. `drainOutbox` re-reads each job from disk,
+  so this fired on the *first* attempt, not only after a relaunch: `if let path =` failed,
+  the audio upload was skipped entirely, and `Outbox.remove` then ran unconditionally and
+  deleted the job. The server was left holding an `awaiting_audio` note with 0 of
+  10,098,127 bytes while the app reported success — the "audio is missing" banner sat in
+  an inner `else` that the failed `if let` could never reach. A real lecture uploaded as
+  text only. The outbox now persists a `Record` wrapper carrying the local-only fields
+  beside the wire payload, and an entry leaves the outbox only once the audio is on the PC
+  or is provably gone from this Mac.
+
+- **Releasing local audio must not depend on the SSE event.** The reclaim was first wired
+  only to the `note`-went-`ready` event. That event never arrived: the app sat running for
+  hours with **zero open TCP connections** and `sseClients: 0` on the server, so a finished
+  lecture kept its 17.8 MB local copy and the Library silently went stale. Root cause of the
+  dead stream is still unknown (App Nap is a candidate). Retention now also polls every 60 s
+  while recordings are held, and reconciles when the app becomes active. Treat SSE as an
+  accelerator, never as the only trigger for anything that matters.
 
 - **`URLSession.AsyncBytes.lines` drops empty lines**, and the blank line is what terminates
   an SSE event — so SSE parsed with `.lines` never dispatches. Parse the raw bytes.

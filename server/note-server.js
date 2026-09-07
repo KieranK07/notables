@@ -322,13 +322,78 @@ function handleAudioStatus(req, res, id) {
   if (!note) return fail(res, 404, 'unknown id ' + id);
   const payload = vault.readInbox(id) || { id, audioFormat: 'm4a', audioBytes: note.audioBytes || 0 };
   const got = vault.audioReceived(id, payload);
+  const expected = Number(payload.audioBytes) || note.audioBytes || 0;
+
+  // `complete` means the bytes are on the PC under their final name (never the .part
+  // file). `safeToDelete` is the stricter promise the Mac erases a lecture on, so it
+  // also requires the note to have finished: at 'ready' the whisper transcript and the
+  // markdown both exist on disk, so the audio is no longer the only copy of the content.
+  const complete = got.complete && (!expected || got.bytes === expected);
+  const safeToDelete = complete && note.state === 'ready';
+
   send(res, 200, {
     ok: true, id,
     received: got.bytes,
-    expected: Number(payload.audioBytes) || note.audioBytes || 0,
-    complete: got.complete,
+    expected,
+    complete,
     state: note.state,
+    safeToDelete,
+    notePath: note.notePath || null,
+    transcriptPath: note.transcriptPath || null,
   }, CORS);
+}
+
+/**
+ * GET /api/audio/{id} - the recording, back again.
+ *
+ * The Mac drops its local copy once safeToDelete goes true, so from that point this is
+ * the only way to hear a lecture. Range requests are honoured because that is what a
+ * seeking player asks for, and a 45-minute lecture is not something to refetch whole.
+ */
+function handleAudioGet(req, res, id) {
+  const note = store.getNote(id);
+  if (!note) return fail(res, 404, 'unknown id ' + id);
+  const payload = vault.readInbox(id) || { id, audioFormat: 'm4a', audioBytes: note.audioBytes || 0 };
+  const abs = vault.audioAbs(id, payload);
+
+  let st;
+  try { st = fs.statSync(abs); }
+  catch (_) {
+    return fail(res, 404, 'the audio for ' + id + ' is not on the server', { state: note.state });
+  }
+
+  const headers = Object.assign({
+    'Content-Type': 'audio/mp4',
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'private, max-age=3600',
+    'Content-Disposition': "inline; filename*=UTF-8''" + encodeURIComponent(id + '.m4a'),
+  }, CORS);
+
+  let start = 0, end = st.size - 1, code = 200;
+  const range = /^bytes=(\d*)-(\d*)$/.exec(util.asString(req.headers.range).trim());
+  if (range && !(range[1] === '' && range[2] === '')) {
+    if (range[1] === '') start = Math.max(0, st.size - Number(range[2]));   // bytes=-500
+    else {
+      start = Number(range[1]);
+      if (range[2] !== '') end = Math.min(end, Number(range[2]));
+    }
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= st.size) {
+      res.writeHead(416, Object.assign({ 'Content-Range': 'bytes */' + st.size }, CORS));
+      return res.end();
+    }
+    code = 206;
+    headers['Content-Range'] = 'bytes ' + start + '-' + end + '/' + st.size;
+  }
+  headers['Content-Length'] = end - start + 1;
+
+  if (req.method === 'HEAD') { res.writeHead(code, headers); return res.end(); }
+  res.writeHead(code, headers);
+  const stream = fs.createReadStream(abs, { start, end });
+  stream.on('error', e => {
+    log.error('streaming audio', id, 'failed -', e.message);
+    try { res.destroy(); } catch (_) {}
+  });
+  stream.pipe(res);
 }
 
 async function handleCapture(req, res) {
@@ -674,6 +739,7 @@ const server = http.createServer(async (req, res) => {
 
     let m = /^\/api\/audio\/([^/]+)$/.exec(p);
     if (m && (method === 'PUT' || method === 'POST')) return handleAudioPut(req, res, decodeURIComponent(m[1]));
+    if (m && (method === 'GET' || method === 'HEAD')) return handleAudioGet(req, res, decodeURIComponent(m[1]));
 
     m = /^\/api\/audio\/([^/]+)\/status$/.exec(p);
     if (m && method === 'GET') return handleAudioStatus(req, res, decodeURIComponent(m[1]));

@@ -37,8 +37,39 @@ Raw body, `Content-Type: audio/mp4`. No multipart — the server is Node stdlib.
 Server writes it to `Audio/`, verifies the length against `audioBytes`, then queues
 transcription. → `202 {"ok":true,"state":"transcribing"}`
 
-Resumable: `GET /api/audio/{id}/status` → `{"received":12345678,"expected":29344512}`.
+Resumable: `GET /api/audio/{id}/status` →
+```jsonc
+{ "received": 12345678, "expected": 29344512,
+  "complete": true,          // the bytes are on the PC under their final name
+  "state": "ready",
+  "safeToDelete": true,      // complete AND state=ready - see below
+  "notePath": "Notes/Chemistry 101/2026-09-07 — Isotopes.md",
+  "transcriptPath": "Transcripts/Chemistry 101/2026-09-07 — Isotopes.txt" }
+```
 The Mac may retry the PUT from scratch; the server overwrites.
+
+### `GET /api/audio/{id}` — the recording back again
+Returns `audio/mp4`. Supports `Range` (`206` + `Content-Range`, `416` when unsatisfiable)
+and `HEAD`, so a player can seek without refetching a 45-minute lecture. `404` while the
+audio has not been uploaded, or after it has been removed from the PC.
+
+## Who keeps the audio
+
+The Mac records to `~/Documents/Notables/Recordings/<id>.m4a` and **keeps that file until
+the PC confirms it no longer needs to**. That confirmation is `safeToDelete`, and it is
+deliberately stricter than "the upload finished":
+
+| condition | why it is in the flag |
+|---|---|
+| `complete` — final-name file on the PC, byte count matches `audioBytes` | a `.part` file is not a recording |
+| `state == "ready"` | at `ready` the whisper transcript **and** the markdown note are also on disk, so the audio has stopped being the only copy of the lecture |
+
+Only the server sets this. **The Mac must never infer it** from an SSE `note` event or from
+its own upload succeeding — it asks, and deletes only on `safeToDelete: true`. Everything
+after that point streams from `GET /api/audio/{id}`.
+
+This is a deliberate move from two copies to one, taken so a term of lectures does not sit
+on a laptop SSD. The PC is now the only machine holding audio.
 
 ### `POST /api/capture` — quick voice capture (iPhone Action Button)
 ```jsonc

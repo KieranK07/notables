@@ -360,6 +360,51 @@ actor NotesClient {
         }
     }
 
+    /// What the PC has of a recording, and whether the Mac may stop holding its copy.
+    struct AudioStatus: Codable, Sendable {
+        var received: Int
+        var expected: Int
+        var complete: Bool
+        var state: String
+        /// Set by the server only. The Mac deletes a lecture on this and nothing else.
+        var safeToDelete: Bool
+        var notePath: String?
+        var transcriptPath: String?
+    }
+
+    func audioStatus(id: String) async throws -> AudioStatus {
+        let data = try await run(request("api/audio/\(id)/status"))
+        return try Self.decoder.decode(AudioStatus.self, from: data)
+    }
+
+    /// Pull a recording back down to a temporary file — the Mac keeps no permanent copy
+    /// once a note is ready, so anything that wants the audio fetches it on demand and
+    /// lets the OS reclaim it. The caller owns the returned file.
+    func downloadAudio(id: String) async throws -> URL {
+        var r = request("api/audio/\(id)")
+        r.timeoutInterval = 600
+
+        let (temp, response): (URL, URLResponse)
+        do { (temp, response) = try await session.download(for: r) }
+        catch { throw ClientError.offline("Couldn't fetch the recording — is the PC awake?") }
+
+        if let http = response as? HTTPURLResponse {
+            if http.statusCode == 401 { throw ClientError.unauthorized }
+            guard (200..<300).contains(http.statusCode) else {
+                try? FileManager.default.removeItem(at: temp)
+                throw ClientError.server(http.statusCode, "the PC has no audio for this note")
+            }
+        }
+
+        // `session.download` names the file for its own bookkeeping and deletes it the
+        // moment this call returns, so move it somewhere the caller can actually use.
+        let dest = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Notables-\(id).m4a")
+        try? FileManager.default.removeItem(at: dest)
+        try FileManager.default.moveItem(at: temp, to: dest)
+        return dest
+    }
+
     // MARK: - SSE
 
     enum Event: Sendable {
