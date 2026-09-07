@@ -49,6 +49,27 @@ independently-built components; do not change it unilaterally.
   Python a pure-ASCII scratch path and moving the file in Node, plus `PYTHONUTF8=1`.
   General rule: any fallback that silently degrades quality must be visible in the UI —
   `transcriptSource` is on every note and the app shows a "rough" badge for `draft`.
+- **`MainActor.assumeIsolated` in an audio tap is a guaranteed crash, not a shortcut.**
+  `Recorder` reached its main-actor `audioFile`/converters from the nonisolated tap callback
+  through three `…Unsafe` accessors wrapping `MainActor.assumeIsolated`. That silences the
+  concurrency checker and then traps (`EXC_BREAKPOINT` in `dispatch_assert_queue_fail`) on the
+  *first* buffer: `assumeIsolated` asserts which thread you are on, and a CoreAudio tap is never
+  the main one. A harness confirms every tap callback arrives off-main. State the tap needs now
+  lives in a lock-protected `TapState` the closure captures; it also holds the only reference to
+  the `AVAudioFile`, so `invalidate()` closes the container at a chosen moment rather than
+  whenever the engine gets round to releasing its closure — the caller stats that file
+  immediately, and an unfinalised one reads as an empty recording.
+
+- **AAC's legal bitrate range depends on the sample rate.** At 16 kHz mono the ceiling is
+  48 kbps; the recorder asked for 64 kbps and `AVAudioFile(forWriting:)` threw
+  `kAudioFormatUnsupportedDataFormatError` ('!dat') from
+  `AudioConverterSetProperty(kAudioConverterEncodeBitRate)`, so **Mac recording never once
+  worked**. `kAudioFormatProperty_AvailableEncodeBitRates` is no help — it is a static
+  superset that advertises 64 kbps at 16 kHz anyway. Worse, the file is created on disk
+  *before* the converter setup throws, leaving a ~557-byte stub that reads as an empty
+  recording. `makeRecordingFile` now descends 48k → 32k → encoder default and deletes the
+  stub between attempts.
+
 - **`URLSession.AsyncBytes.lines` drops empty lines**, and the blank line is what terminates
   an SSE event — so SSE parsed with `.lines` never dispatches. Parse the raw bytes.
 - **`wmic` is gone** on this Windows build; use `powershell -NoProfile -Command`.

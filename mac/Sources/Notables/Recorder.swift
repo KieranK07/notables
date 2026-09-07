@@ -9,6 +9,15 @@ import Speech
 /// audio with whisper large-v3 on its GPU. So the file is encoded for a transcription
 /// model's benefit, not a listener's: 64 kbps mono at 16 kHz ≈ 29 MB for a one-hour class,
 /// near-transparent for speech and small enough to be irrelevant over Tailscale.
+enum RecorderError: LocalizedError {
+    case noAudioConverter
+    var errorDescription: String? {
+        switch self {
+        case .noAudioConverter: return "the microphone format could not be converted for recording"
+        }
+    }
+}
+
 @MainActor
 final class Recorder: ObservableObject {
 
@@ -24,9 +33,7 @@ final class Recorder: ObservableObject {
     @Published private(set) var modelDownloadProgress: Double?
 
     private let engine = AVAudioEngine()
-    private var audioFile: AVAudioFile?
-    private var fileConverter: AVAudioConverter?
-    private var analyzerConverter: AVAudioConverter?
+    private var tap: TapState?
     private var transcriber: Any?                            // LiveTranscriber, gated on macOS 26
     private var startedAt: Date?
     private var ticker: Timer?
@@ -56,6 +63,34 @@ final class Recorder: ObservableObject {
     }
 
     // MARK: - Lifecycle
+
+    /// AAC's legal bitrate range depends on the sample rate, and at 16 kHz mono it tops out
+    /// at 48 kbps: 64 kbps throws `kAudioFormatUnsupportedDataFormatError` ('!dat') out of
+    /// `AudioConverterSetProperty(kAudioConverterEncodeBitRate)`. Two things make that worse
+    /// than it sounds. `kAudioFormatProperty_AvailableEncodeBitRates` is a *static superset*
+    /// which cheerfully advertises 64 kbps at 16 kHz, so it cannot be used to choose a rate;
+    /// and AVAudioFile creates the file on disk *before* the converter setup throws, leaving
+    /// a ~557-byte stub that later reads as an empty recording. So descend through known-good
+    /// rates, fall back to the encoder's own default, and delete the stub between attempts.
+    /// 48 kbps across 8 kHz of speech bandwidth is well past transparent, so the ceiling
+    /// costs nothing. Verified on macOS 26.6.2, 2026-09-07.
+    private static func makeRecordingFile(at url: URL) throws -> AVAudioFile {
+        var lastError: Error = CocoaError(.fileWriteUnknown)
+        for bitRate in [48_000, 32_000, nil] {
+            var settings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 16_000,
+                AVNumberOfChannelsKey: 1
+            ]
+            if let bitRate { settings[AVEncoderBitRateKey] = bitRate }
+            do { return try AVAudioFile(forWriting: url, settings: settings) }
+            catch {
+                lastError = error
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+        throw lastError
+    }
 
     func start(id: String) async {
         guard state == .idle else { return }
@@ -101,29 +136,32 @@ final class Recorder: ObservableObject {
             return
         }
 
-        // Mono 16 kHz is exactly what whisper wants; 64 kbps keeps AAC artefacts off the ASR.
+        // Mono 16 kHz is exactly what whisper wants.
         let url = Self.recordingsDirectory.appendingPathComponent("\(id).m4a")
         recordingURL = url
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 16_000,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 64_000
-        ]
         do {
-            let file = try AVAudioFile(forWriting: url, settings: settings)
-            audioFile = file
-            fileConverter = AVAudioConverter(from: micFormat, to: file.processingFormat)
-            analyzerConverter = AVAudioConverter(from: micFormat, to: analyzerFormat)
-            analyzerConverter?.primeMethod = .none
+            let file = try Self.makeRecordingFile(at: url)
+            // Without this converter nothing reaches disk, so fail loudly rather than
+            // record silence for an hour.
+            guard let toFile = AVAudioConverter(from: micFormat, to: file.processingFormat) else {
+                throw RecorderError.noAudioConverter
+            }
+            let toAnalyzer = AVAudioConverter(from: micFormat, to: analyzerFormat)
+            toAnalyzer?.primeMethod = .none
+            tap = TapState(file: file, toFile: toFile, toAnalyzer: toAnalyzer)
         } catch {
+            try? FileManager.default.removeItem(at: url)
+            recordingURL = nil
             self.error = "Could not create the recording file: \(error.localizedDescription)"
             state = .idle
             return
         }
 
+        // The closure captures the box, never the file itself, so `TapState.invalidate()`
+        // drops the last reference at a moment we choose — see stop().
+        let tapState = tap
         input.installTap(onBus: 0, bufferSize: 4096, format: micFormat) { [weak self] buffer, _ in
-            self?.handle(buffer: buffer, analyzerFormat: analyzerFormat, live: live)
+            self?.handle(buffer: buffer, tap: tapState, analyzerFormat: analyzerFormat, live: live)
         }
 
         do {
@@ -158,7 +196,10 @@ final class Recorder: ObservableObject {
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             writeQueue.async { c.resume() }
         }
-        audioFile = nil
+        // Releases the AVAudioFile here, on the main actor, so the container is finalised
+        // before the caller stats the file. Waiting on the engine to release its tap
+        // closure would race that check and report a good recording as empty.
+        tap?.invalidate(); tap = nil
 
         var transcript = transcriptSoFar
         if #available(macOS 26.0, *), let live = transcriber as? LiveTranscriber {
@@ -178,7 +219,7 @@ final class Recorder: ObservableObject {
         ticker?.invalidate(); ticker = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        audioFile = nil
+        tap?.invalidate(); tap = nil
         if #available(macOS 26.0, *), let live = transcriber as? LiveTranscriber { await live.cancel() }
         transcriber = nil
         if let url = recordingURL { try? FileManager.default.removeItem(at: url) }
@@ -190,33 +231,55 @@ final class Recorder: ObservableObject {
     // MARK: - Audio tap (runs on the audio thread)
 
     private nonisolated func handle(buffer: AVAudioPCMBuffer,
+                                    tap: TapState?,
                                     analyzerFormat: AVAudioFormat,
                                     live: Any) {
         let rms = Self.rms(of: buffer)
         Task { @MainActor [weak self] in self?.push(level: rms) }
 
+        guard let open = tap?.open else { return }   // nil once stop() has closed the file
+
         // Archive copy.
-        if let file = audioFileUnsafe, let conv = fileConverterUnsafe,
-           let out = Self.convert(buffer, with: conv, to: file.processingFormat) {
-            writeQueue.async { try? file.write(from: out) }
+        if let out = Self.convert(buffer, with: open.toFile, to: open.file.processingFormat) {
+            writeQueue.async { try? open.file.write(from: out) }
         }
         // Transcriber copy.
         if #available(macOS 26.0, *), let live = live as? LiveTranscriber,
-           let conv = analyzerConverterUnsafe,
+           let conv = open.toAnalyzer,
            let out = Self.convert(buffer, with: conv, to: analyzerFormat) {
             live.feed(out)
         }
     }
 
-    // The tap runs off the main actor; these are only mutated in start/stop, never during capture.
-    private nonisolated var audioFileUnsafe: AVAudioFile? {
-        MainActor.assumeIsolated { audioFile }
-    }
-    private nonisolated var fileConverterUnsafe: AVAudioConverter? {
-        MainActor.assumeIsolated { fileConverter }
-    }
-    private nonisolated var analyzerConverterUnsafe: AVAudioConverter? {
-        MainActor.assumeIsolated { analyzerConverter }
+    /// What the tap needs to do its job, held off the main actor because that is where the
+    /// tap actually runs. The previous version reached main-actor properties through
+    /// `MainActor.assumeIsolated`, which type-checks and then traps on the first buffer:
+    /// `assumeIsolated` asserts *which thread you are on*, and a CoreAudio tap is never
+    /// the main one. Mutation is confined to start/stop, but the lock is what makes the
+    /// hand-off to the audio thread legal rather than merely hoped-for.
+    private final class TapState: @unchecked Sendable {
+        struct Open {
+            let file: AVAudioFile
+            let toFile: AVAudioConverter
+            let toAnalyzer: AVAudioConverter?
+        }
+        private let lock = NSLock()
+        private var state: Open?
+
+        init(file: AVAudioFile, toFile: AVAudioConverter, toAnalyzer: AVAudioConverter?) {
+            state = Open(file: file, toFile: toFile, toAnalyzer: toAnalyzer)
+        }
+
+        var open: Open? {
+            lock.lock(); defer { lock.unlock() }
+            return state
+        }
+
+        /// Drops the file and converters. Any buffer still in flight sees nil and bows out.
+        func invalidate() {
+            lock.lock(); defer { lock.unlock() }
+            state = nil
+        }
     }
 
     private nonisolated static func convert(_ input: AVAudioPCMBuffer,
@@ -227,14 +290,24 @@ final class Recorder: ObservableObject {
         guard let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return nil }
         var err: NSError?
         var supplied = false
-        converter.convert(to: out, error: &err) { _, status in
+        let status = converter.convert(to: out, error: &err) { _, status in
             if supplied { status.pointee = .noDataNow; return nil }
             supplied = true
             status.pointee = .haveData
             return input
         }
-        if err != nil || out.frameLength == 0 { return nil }
-        return out
+        // `.inputRanDry` is the normal outcome here, not a failure: the input block hands over
+        // exactly one buffer and then reports `.noDataNow`, so the converter runs dry on every
+        // call having already produced good frames. It leaves `error` nil when that happens and
+        // fills it only on a real `.error`, so switching on the status says what we mean.
+        switch status {
+        case .haveData, .inputRanDry:
+            return out.frameLength > 0 ? out : nil
+        case .endOfStream, .error:
+            return nil
+        @unknown default:
+            return nil
+        }
     }
 
     private nonisolated static func rms(of buffer: AVAudioPCMBuffer) -> Float {

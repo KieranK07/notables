@@ -27,7 +27,7 @@ swiftc \
   $(find "$ROOT/Sources" -name '*.swift') \
   -o "$APP/Contents/MacOS/Notables"
 
-echo "› signing (ad-hoc, with entitlements)"
+echo "› signing (with entitlements)"
 # codesign refuses bundles carrying Finder metadata; a running app and copied
 # resources both reintroduce it, so strip and verify rather than assume.
 xattr -cr "$APP"
