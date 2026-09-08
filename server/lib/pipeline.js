@@ -88,11 +88,18 @@ async function runNote(job) {
     transcript = vault.transcriptTextFromFile(vault.abs(note.transcriptPath));
   } else {
     const r = await transcribePhase(note, payload);
-    if (!r) return;                        // fail() already reported
+    // ONLY null means "fail() already reported". whisper succeeding with no speech
+    // returns '', which is falsy — `if (!r)` swallowed that and returned without
+    // failing the note, leaving it stuck at `transcribing` forever with no error and
+    // no SSE event. A 72-minute silent recording spun the app's spinner all morning.
+    if (r === null) return;
     transcript = r;
   }
 
-  if (!asString(transcript).trim()) return fail(note, 'transcript is empty');
+  if (!asString(transcript).trim()) {
+    return fail(note, 'no speech found in the recording — the audio is silent, so ' +
+                      'the microphone captured nothing. The audio is still on the PC.');
+  }
 
   // ---------------------------------------------------------- phase 2: claude
   setState(note, 'processing', 'asking claude');

@@ -96,6 +96,36 @@ independently-built components; do not change it unilaterally.
   while recordings are held, and reconciles when the app becomes active. Treat SSE as an
   accelerator, never as the only trigger for anything that matters.
 
+- **A dead input device records perfect silence and nothing anywhere notices.** A
+  72-minute lecture went to disk as 69,330,236 consecutive **exact zero** samples (AAC
+  compressed it to 500 bit/s — 600 kB for a 72-minute class, against ~49 kbps for a real
+  one). The system default input was AirPods, which stayed "the default input" while
+  delivering nothing. Every layer then reported success: the file was non-empty so the
+  upload proceeded, whisper ran happily and returned 0 segments, and the recording panel
+  said "Listening…" over a flat meter for the whole class. **The RMS meter cannot detect
+  this** — it floors at 0 below −55 dBFS, so a quiet room and a dead device look identical
+  on it. Peak amplitude is the discriminator: real mics have a −60 dBFS noise floor, dead
+  ones give exactly 0.0. `Recorder` now tracks peak per buffer, warns in the panel after
+  12 s of silence, names the actual input device on screen, and banners at stop if it never
+  heard a single sample. `bench/silence-check` runs the real `Recorder.measure` over this
+  lecture and a good one as a regression test.
+
+- **AVAudioEngine does not follow the audio route.** A device change (AirPods connecting,
+  the default input switched) tears down the engine's connections and takes the tap with
+  them, while `engine.isRunning` keeps saying yes — so the rest of the lecture is written
+  as silence. `Recorder` now observes `.AVAudioEngineConfigurationChange`, rebuilds the
+  converters against the new format, keeps writing to the *same* `AVAudioFile`, and says
+  on screen that the input changed.
+
+- **An empty string is falsy, and `if (!r) return` swallowed a whole note.**
+  `pipeline.runNote` called `transcribePhase`, whose contract is "returns the text, or
+  `null` after calling `fail()`". whisper succeeding with no speech returns `''`, which took
+  the `null` branch: the function returned **without** failing the note, so it sat at
+  `transcribing` forever — no error, no SSE event, the app's spinner turning all morning.
+  The `if (!transcript.trim()) return fail(...)` guard one line below could never be reached
+  for `''`, only for whitespace. Test the sentinel (`r === null`), never truthiness, when
+  the sentinel and a legitimate empty value are both falsy.
+
 - **`URLSession.AsyncBytes.lines` drops empty lines**, and the blank line is what terminates
   an SSE event — so SSE parsed with `.lines` never dispatches. Parse the raw bytes.
 - **`wmic` is gone** on this Windows build; use `powershell -NoProfile -Command`.

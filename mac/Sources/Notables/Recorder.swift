@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import CoreAudio
 import Speech
 
 /// Captures the microphone to a compact AAC file while running Apple's on-device
@@ -32,9 +33,28 @@ final class Recorder: ObservableObject {
     @Published private(set) var error: String?
     @Published private(set) var modelDownloadProgress: Double?
 
+    /// Which device the audio is actually coming from. Shown while recording because the
+    /// system default input is not always the one you think: an hour of a lecture was lost
+    /// to AirPods that were still the default input while delivering nothing.
+    @Published private(set) var inputDeviceName: String?
+    /// How long the input has been delivering pure digital zeros. Drives the "no sound is
+    /// reaching Notables" warning.
+    @Published private(set) var silentFor: TimeInterval = 0
+    /// False until a single sample above the silence floor arrives. If this is still false
+    /// at stop(), the recording is 100% silence and the class was not captured at all.
+    @Published private(set) var heardSignal = false
+
+    /// −80 dBFS. Comfortably below any real microphone's noise floor (−60 dBFS or so), so
+    /// this detects a *dead* input, never a quiet room.
+    private static let silenceFloor: Float = 1e-4
+    /// How long a dead input has to stay dead before the UI shouts about it.
+    static let silenceWarningAfter: TimeInterval = 12
+
     private let engine = AVAudioEngine()
     private var tap: TapState?
     private var transcriber: Any?                            // LiveTranscriber, gated on macOS 26
+    private var analyzerFormat: AVAudioFormat?
+    private var configObserver: NSObjectProtocol?
     private var startedAt: Date?
     private var ticker: Timer?
     private let writeQueue = DispatchQueue(label: "com.kierankelly.notables.write")
@@ -109,6 +129,8 @@ final class Recorder: ObservableObject {
         }
 
         finalText = ""; volatileText = ""; levels = []; level = 0; elapsed = 0
+        silentFor = 0; heardSignal = false
+        inputDeviceName = Self.currentInputDeviceName()
 
         let live = LiveTranscriber()
         transcriber = live
@@ -157,12 +179,8 @@ final class Recorder: ObservableObject {
             return
         }
 
-        // The closure captures the box, never the file itself, so `TapState.invalidate()`
-        // drops the last reference at a moment we choose — see stop().
-        let tapState = tap
-        input.installTap(onBus: 0, bufferSize: 4096, format: micFormat) { [weak self] buffer, _ in
-            self?.handle(buffer: buffer, tap: tapState, analyzerFormat: analyzerFormat, live: live)
-        }
+        self.analyzerFormat = analyzerFormat
+        installTap(micFormat: micFormat)
 
         do {
             engine.prepare()
@@ -172,6 +190,16 @@ final class Recorder: ObservableObject {
             self.error = "Could not start the audio engine: \(error.localizedDescription)"
             state = .idle
             return
+        }
+
+        // A device change (AirPods connecting, a dock unplugged, the default input switched
+        // in System Settings) tears the engine's connections down and takes the tap with
+        // them. The engine keeps reporting itself as running, so without this the rest of
+        // the lecture goes to disk as silence and nothing says so.
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.audioRouteChanged() }
         }
 
         startedAt = Date()
@@ -189,6 +217,7 @@ final class Recorder: ObservableObject {
         guard state == .recording else { return (recordingURL, finalText, elapsed) }
         state = .finishing
         ticker?.invalidate(); ticker = nil
+        if let o = configObserver { NotificationCenter.default.removeObserver(o); configObserver = nil }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
 
@@ -208,6 +237,7 @@ final class Recorder: ObservableObject {
         finalText = transcript
         volatileText = ""
         transcriber = nil
+        analyzerFormat = nil
         let duration = elapsed
         state = .idle
         level = 0
@@ -217,15 +247,104 @@ final class Recorder: ObservableObject {
     func cancel() async {
         guard state != .idle else { return }
         ticker?.invalidate(); ticker = nil
+        if let o = configObserver { NotificationCenter.default.removeObserver(o); configObserver = nil }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         tap?.invalidate(); tap = nil
         if #available(macOS 26.0, *), let live = transcriber as? LiveTranscriber { await live.cancel() }
         transcriber = nil
+        analyzerFormat = nil
         if let url = recordingURL { try? FileManager.default.removeItem(at: url) }
         recordingURL = nil
         finalText = ""; volatileText = ""; elapsed = 0; level = 0; levels = []
+        silentFor = 0; heardSignal = false
         state = .idle
+    }
+
+    // MARK: - Input device
+
+    /// Installs (or reinstalls) the tap for `micFormat`. The closure captures the `TapState`
+    /// box, never the file itself, so `TapState.invalidate()` drops the last reference at a
+    /// moment we choose — see stop().
+    private func installTap(micFormat: AVAudioFormat) {
+        guard let tapState = tap, let analyzerFormat, let open = tapState.open else { return }
+        guard let toFile = AVAudioConverter(from: micFormat, to: open.file.processingFormat) else {
+            error = "The new audio input's format cannot be recorded. Stop and start again."
+            return
+        }
+        let toAnalyzer = AVAudioConverter(from: micFormat, to: analyzerFormat)
+        toAnalyzer?.primeMethod = .none
+        tapState.reconfigure(toFile: toFile, toAnalyzer: toAnalyzer)
+
+        let live = transcriber
+        let input = engine.inputNode
+        input.removeTap(onBus: 0)
+        input.installTap(onBus: 0, bufferSize: 4096, format: micFormat) { [weak self] buffer, _ in
+            self?.handle(buffer: buffer, tap: tapState, analyzerFormat: analyzerFormat, live: live as Any)
+        }
+    }
+
+    /// The audio hardware changed under a running recording. AVAudioEngine has already
+    /// stopped and dropped every connection, so capture is dead until we rebuild it —
+    /// silently, if nobody does. Rebuild against the new device and keep writing to the
+    /// same file, and say what happened either way.
+    private func audioRouteChanged() {
+        guard state == .recording else { return }
+        let previous = inputDeviceName
+        inputDeviceName = Self.currentInputDeviceName()
+
+        let input = engine.inputNode
+        let micFormat = input.outputFormat(forBus: 0)
+        guard micFormat.sampleRate > 0 else {
+            error = "The microphone (\(previous ?? "input")) went away. Recording is paused — " +
+                    "reconnect it, or stop and start again."
+            return
+        }
+        installTap(micFormat: micFormat)
+        do {
+            if !engine.isRunning {
+                engine.prepare()
+                try engine.start()
+            }
+            if let now = inputDeviceName, now != previous {
+                error = "The audio input switched to \(now) mid-recording. Still recording — " +
+                        "check that the class is still being picked up."
+            }
+        } catch {
+            self.error = "The audio input changed and recording could not resume: " +
+                         "\(error.localizedDescription). Stop and start again."
+        }
+    }
+
+    /// The name of the system's current default input device, straight from CoreAudio.
+    /// AVAudioEngine gives no way to ask, and "which microphone is this actually?" is the
+    /// question that would have caught a silent hour.
+    private static func currentInputDeviceName() -> String? {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                         &addr, 0, nil, &size, &deviceID) == noErr,
+              deviceID != kAudioObjectUnknown else { return nil }
+
+        // kAudioObjectPropertyName hands back a +1 CFStringRef. It has to land in an
+        // `Unmanaged` — taking `&` on a plain `CFString` forms a raw pointer to an object
+        // reference, which the compiler rightly calls out and ARC would then double-free.
+        var name: Unmanaged<CFString>?
+        var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        var nameAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioObjectPropertyName,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        let status = withUnsafeMutablePointer(to: &name) {
+            AudioObjectGetPropertyData(deviceID, &nameAddr, 0, nil, &nameSize, $0)
+        }
+        guard status == noErr, let cf = name?.takeRetainedValue() else { return nil }
+        let s = cf as String
+        return s.isEmpty ? nil : s
     }
 
     // MARK: - Audio tap (runs on the audio thread)
@@ -234,8 +353,10 @@ final class Recorder: ObservableObject {
                                     tap: TapState?,
                                     analyzerFormat: AVAudioFormat,
                                     live: Any) {
-        let rms = Self.rms(of: buffer)
-        Task { @MainActor [weak self] in self?.push(level: rms) }
+        let m = Self.measure(buffer)
+        Task { @MainActor [weak self] in
+            self?.push(level: m.meter, peak: m.peak, seconds: m.seconds)
+        }
 
         guard let open = tap?.open else { return }   // nil once stop() has closed the file
 
@@ -275,6 +396,14 @@ final class Recorder: ObservableObject {
             return state
         }
 
+        /// Swap in converters built for a new input format, keeping the same open file, so
+        /// a device change mid-lecture costs a moment of audio rather than the rest of it.
+        func reconfigure(toFile: AVAudioConverter, toAnalyzer: AVAudioConverter?) {
+            lock.lock(); defer { lock.unlock() }
+            guard let current = state else { return }
+            state = Open(file: current.file, toFile: toFile, toAnalyzer: toAnalyzer)
+        }
+
         /// Drops the file and converters. Any buffer still in flight sees nil and bows out.
         func invalidate() {
             lock.lock(); defer { lock.unlock() }
@@ -310,21 +439,45 @@ final class Recorder: ObservableObject {
         }
     }
 
-    private nonisolated static func rms(of buffer: AVAudioPCMBuffer) -> Float {
-        guard let data = buffer.floatChannelData else { return 0 }
+    /// One pass over the buffer for both jobs the meter and the watchdog need.
+    ///
+    /// `meter` is the pretty 0…1 needle value, which floors at 0 for anything below
+    /// −55 dBFS — a quiet room and a dead input look identical on it, which is why it
+    /// cannot be what detects silence. `peak` is the raw maximum sample, and *that*
+    /// separates "nobody is talking" (a noise floor around −60 dBFS) from "this device is
+    /// handing us zeros" (exactly 0.0, for 69 million samples straight).
+    /// Internal rather than private so bench/silence-check can run the real function
+    /// over real recordings — see that harness for the regression this guards.
+    nonisolated static func measure(_ buffer: AVAudioPCMBuffer)
+    -> (meter: Float, peak: Float, seconds: TimeInterval) {
         let n = Int(buffer.frameLength)
-        guard n > 0 else { return 0 }
+        let seconds = buffer.format.sampleRate > 0
+            ? TimeInterval(n) / buffer.format.sampleRate : 0
+        guard let data = buffer.floatChannelData, n > 0 else { return (0, 0, seconds) }
         var sum: Float = 0
-        for i in 0..<n { let s = data[0][i]; sum += s * s }
+        var peak: Float = 0
+        for i in 0..<n {
+            let s = data[0][i]
+            sum += s * s
+            let a = abs(s)
+            if a > peak { peak = a }
+        }
         let rms = (sum / Float(n)).squareRoot()
         // dBFS → a 0…1 scale that looks right on a meter.
         let db = 20 * log10(max(rms, 1e-7))
-        return min(max((db + 55) / 55, 0), 1)
+        return (min(max((db + 55) / 55, 0), 1), peak, seconds)
     }
 
-    private func push(level newLevel: Float) {
+    private func push(level newLevel: Float, peak: Float, seconds: TimeInterval) {
         level += (newLevel - level) * 0.35            // smooth the needle
         levels.append(newLevel)
         if levels.count > 180 { levels.removeFirst(levels.count - 180) }
+
+        if peak > Self.silenceFloor {
+            heardSignal = true
+            silentFor = 0
+        } else {
+            silentFor += seconds
+        }
     }
 }

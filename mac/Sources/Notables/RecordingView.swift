@@ -33,6 +33,8 @@ struct RecordingView: View {
             LevelMeter(levels: recorder.levels, active: recorder.state == .recording)
                 .frame(height: 52)
 
+            if showSilenceWarning { silenceWarning }
+
             HStack(spacing: 10) {
                 if recorder.state == .recording {
                     Circle().fill(Theme.recordRed).frame(width: 9, height: 9)
@@ -47,8 +49,13 @@ struct RecordingView: View {
                     .contentTransition(.numericText())
                 Spacer()
                 if recorder.state == .recording {
-                    Label("Transcribing on-device", systemImage: "waveform.badge.mic")
+                    // Naming the device is the cheapest guard against the failure that
+                    // costs a whole lecture: the system default input being something
+                    // that is not in the room.
+                    Label(recorder.inputDeviceName ?? "Transcribing on-device",
+                          systemImage: "waveform.badge.mic")
                         .font(Theme.Font.caption).foregroundStyle(Theme.inkMuted)
+                        .lineLimit(1)
                 }
             }
         }
@@ -56,6 +63,34 @@ struct RecordingView: View {
     }
 
     @State private var pulse = false
+
+    private var showSilenceWarning: Bool {
+        recorder.state == .recording && recorder.silentFor >= Recorder.silenceWarningAfter
+    }
+
+    /// A dead input is not a subtle problem and does not get a subtle banner: 72 minutes of
+    /// digital silence once sailed through recording, upload and transcription without a
+    /// single thing on screen looking wrong.
+    private var silenceWarning: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Theme.recordRed)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(recorder.heardSignal
+                     ? "No sound for \(Int(recorder.silentFor))s"
+                     : "No sound is reaching Notables")
+                    .font(Theme.Font.headline).foregroundStyle(Theme.ink)
+                Text("\(recorder.inputDeviceName ?? "The input device") is sending silence. "
+                     + "Check System Settings › Sound › Input — this class is not being recorded.")
+                    .font(Theme.Font.caption).foregroundStyle(Theme.inkMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(Theme.recordRed.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.recordRed.opacity(0.35)))
+    }
 
     /// Committed text reads solid; the phrase still being revised is dimmed.
     private var liveTranscript: AttributedString {
@@ -79,7 +114,11 @@ struct RecordingView: View {
                                 .font(.system(size: 26, weight: .light))
                                 .foregroundStyle(Theme.inkFaint.opacity(0.6))
                             if recorder.state == .recording {
-                                Text("Listening…").font(Theme.Font.headline).foregroundStyle(Theme.inkFaint)
+                                // "Listening…" over a dead microphone is exactly the
+                                // reassurance that let a silent lecture run to the end.
+                                Text(showSilenceWarning ? "Hearing nothing" : "Listening…")
+                                    .font(Theme.Font.headline)
+                                    .foregroundStyle(showSilenceWarning ? Theme.recordRed : Theme.inkFaint)
                             }
                         }
                         .frame(maxWidth: .infinity).padding(.top, 70)

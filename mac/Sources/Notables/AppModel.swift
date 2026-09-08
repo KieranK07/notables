@@ -270,6 +270,11 @@ final class AppModel: ObservableObject {
         guard let id = currentRecordingID else { return }
         let startedAt = Date().addingTimeInterval(-recorder.elapsed)
         let result = await recorder.stop()
+        // Survives stop() on purpose: a recording that never saw a single sample above the
+        // silence floor is not a recording, and the user has to hear that now rather than
+        // discover it when the note comes back empty an hour later.
+        let capturedNothing = !recorder.heardSignal
+        let inputName = recorder.inputDeviceName ?? "the input device"
         currentRecordingID = nil
 
         guard let audioURL = result.url,
@@ -294,9 +299,16 @@ final class AppModel: ObservableObject {
         )
 
         // Queue to disk first. A sleeping PC can never cost us a lecture.
+        // Silent audio is still uploaded: the durability contract does not get to decide
+        // the recording was worthless, and the server reports the empty transcript as a
+        // visible failure. The banner is what makes it visible here.
         Outbox.save(payload)
         pendingUploads = Outbox.pending().count
         recordingTitle = ""
+        if capturedNothing {
+            banner = "That recording is completely silent — \(inputName) captured nothing. "
+                   + "Check System Settings › Sound › Input before the next class."
+        }
         await drainOutbox()
     }
 
