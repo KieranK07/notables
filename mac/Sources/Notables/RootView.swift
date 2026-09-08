@@ -4,6 +4,7 @@ struct RootView: View {
     @ObservedObject var model: AppModel
     @State private var showRecorder = false
     @State private var materialSelection: MaterialSelection?
+    @State private var confirmFullSync = false
 
     var body: some View {
         NavigationSplitView {
@@ -21,11 +22,30 @@ struct RootView: View {
         .sheet(isPresented: $showRecorder) {
             RecordingView(model: model, recorder: model.recorder)
         }
+        .confirmationDialog("Re-pull everything from Canvas?",
+                            isPresented: $confirmFullSync, titleVisibility: .visible) {
+            Button("Re-pull everything") { Task { await model.syncCanvas(full: true) } }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Widens the sync to every enrolled course, including finished terms, and "
+                 + "re-downloads and re-reads files even when Canvas says they haven't "
+                 + "changed. Each course's glossary is rebuilt afterwards. Expect several "
+                 + "minutes and a few hundred MB. The routine sync every 6 hours only "
+                 + "picks up what is new.")
+        }
         .toolbar {
             if model.selection == .materials {
                 ToolbarItem {
-                    Button { Task { await model.syncCanvas() } } label: {
+                    // Split button: the common case stays one click, and the expensive
+                    // one is behind the chevron where it cannot be hit by accident.
+                    Menu {
+                        Button("Sync new files") { Task { await model.syncCanvas() } }
+                        Divider()
+                        Button("Re-pull everything…") { confirmFullSync = true }
+                    } label: {
                         Label("Sync Canvas", systemImage: "arrow.triangle.2.circlepath")
+                    } primaryAction: {
+                        Task { await model.syncCanvas() }
                     }
                     .disabled(model.canvasSyncing || model.canvas?.hasSession != true)
                     .help("Pull new files from each course's Canvas modules")
