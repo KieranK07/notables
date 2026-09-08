@@ -152,6 +152,8 @@ final class AppModel: ObservableObject {
                 upsert(note)
                 if note.id == selectedNoteID { await loadDetail(note.id) }
                 if note.state == .ready { await reclaimLocalAudio(for: note.id) }
+            case .noteDeleted(let id):
+                removeLocally(id)
             case .todos(let list):
                 todos = list
             case .state(let id, let state, _):
@@ -251,6 +253,35 @@ final class AppModel: ObservableObject {
         Task {
             do { try await client.reprocess(id: id); banner = "Re-running the notes pass…" }
             catch { banner = error.localizedDescription }
+        }
+    }
+
+    /// Deletes a note on the PC and drops it here. The server owns the vault, so this waits
+    /// for it to confirm before touching local state — and only then releases this Mac's
+    /// copy of the audio, which is otherwise held until `safeToDelete`, a flag a deleted
+    /// note will never produce.
+    func deleteNote(_ id: String) {
+        Task {
+            let title = notes.first(where: { $0.id == id })?.title ?? "That note"
+            do {
+                try await client.deleteNote(id: id)
+                LocalRecordings.all().filter { $0.id == id }.forEach { _ = LocalRecordings.remove($0) }
+                localAudioBytes = LocalRecordings.all().reduce(0) { $0 + $1.bytes }
+                removeLocally(id)
+                banner = "Deleted “\(title)”."
+            } catch {
+                banner = error.localizedDescription
+            }
+        }
+    }
+
+    /// Drop a deleted note from this window, whether we deleted it or another client did.
+    private func removeLocally(_ id: String) {
+        notes.removeAll { $0.id == id }
+        todos.removeAll { $0.source == "note:" + id }
+        if selectedNoteID == id {
+            selectedNoteID = nil
+            detail = nil
         }
     }
 

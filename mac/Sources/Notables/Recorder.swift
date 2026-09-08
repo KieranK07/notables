@@ -37,6 +37,8 @@ final class Recorder: ObservableObject {
     /// system default input is not always the one you think: an hour of a lecture was lost
     /// to AirPods that were still the default input while delivering nothing.
     @Published private(set) var inputDeviceName: String?
+    /// False only when this Mac has no built-in input to pin to, or pinning was refused.
+    @Published private(set) var usingBuiltInMic = true
     /// How long the input has been delivering pure digital zeros. Drives the "no sound is
     /// reaching Notables" warning.
     @Published private(set) var silentFor: TimeInterval = 0
@@ -130,7 +132,6 @@ final class Recorder: ObservableObject {
 
         finalText = ""; volatileText = ""; levels = []; level = 0; elapsed = 0
         silentFor = 0; heardSignal = false
-        inputDeviceName = Self.currentInputDeviceName()
 
         let live = LiveTranscriber()
         transcriber = live
@@ -151,6 +152,9 @@ final class Recorder: ObservableObject {
         }
 
         let input = engine.inputNode
+        pinToBuiltInMic()
+        // Read the format only after pinning: it describes whichever device the input node
+        // is now attached to, and that is no longer the system default.
         let micFormat = input.outputFormat(forBus: 0)
         guard micFormat.sampleRate > 0 else {
             self.error = "No microphone input is available."
@@ -291,9 +295,11 @@ final class Recorder: ObservableObject {
     private func audioRouteChanged() {
         guard state == .recording else { return }
         let previous = inputDeviceName
-        inputDeviceName = Self.currentInputDeviceName()
 
+        // Re-pin rather than accept whatever the change left behind: AirPods connecting
+        // mid-lecture must not become the microphone, which is the whole point of pinning.
         let input = engine.inputNode
+        pinToBuiltInMic()
         let micFormat = input.outputFormat(forBus: 0)
         guard micFormat.sampleRate > 0 else {
             error = "The microphone (\(previous ?? "input")) went away. Recording is paused — " +
@@ -316,10 +322,55 @@ final class Recorder: ObservableObject {
         }
     }
 
-    /// The name of the system's current default input device, straight from CoreAudio.
-    /// AVAudioEngine gives no way to ask, and "which microphone is this actually?" is the
-    /// question that would have caught a silent hour.
-    private static func currentInputDeviceName() -> String? {
+    struct InputDevice: Equatable {
+        let id: AudioDeviceID
+        let name: String
+    }
+
+    /// Pin the engine's input to the Mac's own microphone, whatever the system default is.
+    ///
+    /// `AVAudioEngine.inputNode` otherwise follows the system default input, which is how a
+    /// lecture came out as 72 minutes of silence: AirPods held the default while delivering
+    /// nothing. The built-in mic is the one that is always present, always in the room, and
+    /// never claimed by a phone — for recording a class it is simply the right device, so
+    /// the app stops asking. `setDeviceID` must happen while the engine is stopped, which is
+    /// true at both call sites (start, and after a route change tears the engine down).
+    private func pinToBuiltInMic() {
+        guard let builtIn = Self.builtInInputDevice() else {
+            // No built-in input at all — a Mac mini, or a Studio with nothing attached.
+            // Fall back to the default rather than refusing to record, and name it.
+            let fallback = Self.defaultInputDevice()
+            usingBuiltInMic = false
+            inputDeviceName = fallback?.name
+            return
+        }
+        do {
+            try engine.inputNode.auAudioUnit.setDeviceID(builtIn.id)
+            usingBuiltInMic = true
+            inputDeviceName = builtIn.name
+        } catch {
+            let fallback = Self.defaultInputDevice()
+            usingBuiltInMic = false
+            inputDeviceName = fallback?.name
+            self.error = "Could not switch to the built-in microphone " +
+                         "(\(error.localizedDescription)) — recording from " +
+                         "\(fallback?.name ?? "the default input") instead."
+        }
+    }
+
+    /// The Mac's own microphone: built-in transport, with input channels. Matching on
+    /// transport type rather than on the name keeps this working across Mac models.
+    nonisolated static func builtInInputDevice() -> InputDevice? {
+        for id in allDeviceIDs()
+        where transportType(id) == kAudioDeviceTransportTypeBuiltIn && inputChannels(id) > 0 {
+            return InputDevice(id: id, name: deviceName(id) ?? "Built-in Microphone")
+        }
+        return nil
+    }
+
+    /// The system's current default input — only the fallback now, but still what gets named
+    /// on screen when there is no built-in mic to pin to.
+    nonisolated static func defaultInputDevice() -> InputDevice? {
         var deviceID = AudioDeviceID(0)
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)
         var addr = AudioObjectPropertyAddress(
@@ -329,18 +380,67 @@ final class Recorder: ObservableObject {
         guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
                                          &addr, 0, nil, &size, &deviceID) == noErr,
               deviceID != kAudioObjectUnknown else { return nil }
+        return InputDevice(id: deviceID, name: deviceName(deviceID) ?? "Default Input")
+    }
 
+    private nonisolated static func allDeviceIDs() -> [AudioDeviceID] {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject),
+                                             &addr, 0, nil, &size) == noErr else { return [] }
+        let count = Int(size) / MemoryLayout<AudioDeviceID>.size
+        guard count > 0 else { return [] }
+        var ids = [AudioDeviceID](repeating: 0, count: count)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                         &addr, 0, nil, &size, &ids) == noErr else { return [] }
+        return ids
+    }
+
+    private nonisolated static func transportType(_ id: AudioDeviceID) -> UInt32 {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value) == noErr else { return 0 }
+        return value
+    }
+
+    /// Total input channels. Zero means the device is output-only, which is how the
+    /// speakers-and-microphone pair that share a name are told apart.
+    private nonisolated static func inputChannels(_ id: AudioDeviceID) -> Int {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr, size > 0
+        else { return 0 }
+        let raw = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { raw.deallocate() }
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, raw) == noErr else { return 0 }
+        let list = UnsafeMutableAudioBufferListPointer(
+            raw.assumingMemoryBound(to: AudioBufferList.self))
+        return list.reduce(0) { $0 + Int($1.mNumberChannels) }
+    }
+
+    private nonisolated static func deviceName(_ id: AudioDeviceID) -> String? {
         // kAudioObjectPropertyName hands back a +1 CFStringRef. It has to land in an
         // `Unmanaged` — taking `&` on a plain `CFString` forms a raw pointer to an object
         // reference, which the compiler rightly calls out and ARC would then double-free.
         var name: Unmanaged<CFString>?
-        var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-        var nameAddr = AudioObjectPropertyAddress(
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        var addr = AudioObjectPropertyAddress(
             mSelector: kAudioObjectPropertyName,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain)
         let status = withUnsafeMutablePointer(to: &name) {
-            AudioObjectGetPropertyData(deviceID, &nameAddr, 0, nil, &nameSize, $0)
+            AudioObjectGetPropertyData(id, &addr, 0, nil, &size, $0)
         }
         guard status == noErr, let cf = name?.takeRetainedValue() else { return nil }
         let s = cf as String

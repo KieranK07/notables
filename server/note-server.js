@@ -505,6 +505,49 @@ function handleTodoDone(req, res, id, done) {
   pipeline.emitTodos();
 }
 
+/**
+ * DELETE /api/note/{id} - remove a note and everything derived from it.
+ *
+ * The vault is the product, so this deletes for real: the markdown, the transcript and
+ * its whisper sidecar, the audio, the inbox payload, and any deadlines this lecture
+ * produced. There is no undo and none is implied - the app asks first.
+ *
+ * Refused while the pipeline holds the note, because deleting the audio out from under a
+ * running whisper job produces a confusing failure instead of a clean one.
+ */
+function handleNoteDelete(req, res, id) {
+  const note = store.getNote(id);
+  if (!note) return fail(res, 404, 'unknown id ' + id);
+  if (pipeline.isBusy(id)) {
+    return fail(res, 409, 'this note is being processed right now - try again in a moment');
+  }
+
+  const payload = vault.readInbox(id) || { id, audioFormat: (note.audioPath || '.m4a').split('.').pop() };
+  const removed = [];
+
+  // The transcript's whisper sidecar sits beside it as .json.
+  if (note.transcriptPath) {
+    removed.push(note.transcriptPath);
+    vault.removeFileQuiet(note.transcriptPath);
+    vault.removeFileQuiet(note.transcriptPath.replace(/\.txt$/i, '.json'));
+  }
+  if (note.notePath) { removed.push(note.notePath); vault.removeFileQuiet(note.notePath); }
+
+  for (const abs of [vault.audioAbs(id, payload), vault.audioPartAbs(id, payload)]) {
+    try { fs.unlinkSync(abs); removed.push(vault.rel(abs)); } catch (_) {}
+  }
+  vault.deleteInbox(id);
+
+  store.replaceTodosForSource('note:' + id, []);
+  store.removeNote(id);
+  store.save(true);
+
+  log.info('deleted note', id, '-', util.asString(note.title), '|', removed.length, 'file(s)');
+  send(res, 200, { ok: true, id, removed }, CORS);
+  sse.broadcast('note-deleted', { id });
+  pipeline.emitTodos();
+}
+
 // Extension beyond PROTOCOL.md: rebuild the derived index from the markdown files.
 function handleReindex(req, res) {
   const r = vault.rebuildIndex();
@@ -876,6 +919,7 @@ const server = http.createServer(async (req, res) => {
 
     m = /^\/api\/note\/([^/]+)$/.exec(p);
     if (m && method === 'GET') return handleNote(req, res, decodeURIComponent(m[1]));
+    if (m && method === 'DELETE') return handleNoteDelete(req, res, decodeURIComponent(m[1]));
 
     m = /^\/api\/todo\/([^/]+)\/(done|undone)$/.exec(p);
     if (m && method === 'POST') return handleTodoDone(req, res, decodeURIComponent(m[1]), m[2] === 'done');

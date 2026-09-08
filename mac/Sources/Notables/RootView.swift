@@ -271,6 +271,8 @@ struct MiddleColumn: View {
 
 struct NoteList: View {
     @ObservedObject var model: AppModel
+    /// Set by the row's context menu; drives one confirmation sheet for the whole list.
+    @State private var pendingDelete: Note?
 
     var body: some View {
         let notes = model.visibleNotes
@@ -288,6 +290,13 @@ struct NoteList: View {
                                 .quietRowSelection(note.id == model.selectedNoteID)
                                 .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
                                 .listRowSeparator(.hidden)
+                                .contextMenu {
+                                    Button("Re-run notes pass") { model.reprocess(note.id) }
+                                    Divider()
+                                    Button("Delete Note…", role: .destructive) {
+                                        pendingDelete = note
+                                    }
+                                }
                         }
                     } header: {
                         Text(day)
@@ -299,6 +308,19 @@ struct NoteList: View {
             .listStyle(.inset)
             .scrollContentBackground(.hidden)
             .background(Theme.canvas)
+            .confirmationDialog("Delete “\(pendingDelete?.title ?? "")”?",
+                                isPresented: Binding(get: { pendingDelete != nil },
+                                                     set: { if !$0 { pendingDelete = nil } }),
+                                titleVisibility: .visible) {
+                Button("Delete", role: .destructive) {
+                    if let n = pendingDelete { model.deleteNote(n.id) }
+                    pendingDelete = nil
+                }
+                Button("Cancel", role: .cancel) { pendingDelete = nil }
+            } message: {
+                Text("The note, its transcript and its recording are deleted from the PC, "
+                     + "along with any deadlines this class produced. This can't be undone.")
+            }
         }
     }
 

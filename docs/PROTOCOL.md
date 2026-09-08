@@ -102,9 +102,20 @@ confirmation and the Mac app shows the classified result over SSE moments later.
 ```
 
 ### `GET /api/note/{id}` → `{ …meta, "markdown":"…", "transcript":"…" }`
+### `DELETE /api/note/{id}` — remove a note and everything derived from it
+→ `200 {"ok":true,"id":"…","removed":["Notes/…","Transcripts/…","Audio/….m4a"]}`
+
+Deletes for real and without an undo: the markdown, the transcript and its whisper
+sidecar, the audio, the inbox payload, and every todo whose `source` is `note:{id}`.
+Clients must confirm with the user first.
+
+`409` while the pipeline holds the note — deleting the audio out from under a running
+whisper job turns a clean outcome into a confusing one. `404` for an unknown id.
+Broadcasts `note-deleted` so other clients drop it too.
 ### `GET /api/events` — Server-Sent Events, the live-update channel
 ```
-event: note     data: {…note object…}     // created or updated
+event: note         data: {…note object…}     // created or updated
+event: note-deleted data: {"id":"…"}           // gone from the vault, drop it
 event: state    data: {"id":"…","state":"processing","detail":"asking claude"}
 event: todos    data: {"todos":[…]}
 : keepalive                                // every 20s

@@ -110,6 +110,15 @@ independently-built components; do not change it unilaterally.
   heard a single sample. `bench/silence-check` runs the real `Recorder.measure` over this
   lecture and a good one as a regression test.
 
+- **`AVAudioEngine.inputNode` follows the *system default* input, and that is not a
+  setting you want a lecture to depend on.** The app now pins the built-in mic explicitly
+  — `engine.inputNode.auAudioUnit.setDeviceID(...)`, which must be set while the engine is
+  stopped and *before* `outputFormat(forBus:)` is read, since the format describes whichever
+  device the node is attached to. The device is found by transport type
+  (`kAudioDeviceTransportTypeBuiltIn` with input channels), never by name, so it survives a
+  change of Mac; no built-in input at all falls back to the default and says so on screen.
+  The route-change handler re-pins rather than accepting whatever the change left behind.
+
 - **AVAudioEngine does not follow the audio route.** A device change (AirPods connecting,
   the default input switched) tears down the engine's connections and takes the tap with
   them, while `engine.isRunning` keeps saying yes — so the rest of the lecture is written

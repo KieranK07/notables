@@ -165,6 +165,7 @@ function notesSorted() {
   });
 }
 function getNote(id) { return state.notes.get(id) || null; }
+function removeNote(id) { return state.notes.delete(id); }
 function putNote(note) {
   note.updatedAt = nowIso();
   state.notes.set(note.id, note);
@@ -232,7 +233,7 @@ module.exports = {
   state, load, save, writeAtomic, readJson,
   ensureCourse, addGlossaryTerms, glossaryFor, courseSummaries, courseNames,
   setCourseCanvas, restoreCourseMeta,
-  notesSorted, getNote, putNote,
+  notesSorted, getNote, putNote, removeNote,
   allTodos, todosSorted, replaceTodosForSource, setTodoDone, todoId,
   reset,
 };

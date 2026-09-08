@@ -3,6 +3,7 @@ import SwiftUI
 struct DetailColumn: View {
     @ObservedObject var model: AppModel
     @State private var showTranscript = false
+    @State private var confirmingDelete = false
 
     private var note: Note? {
         guard let id = model.selectedNoteID else { return nil }
@@ -90,8 +91,19 @@ struct DetailColumn: View {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(model.detail?.transcript ?? "", forType: .string)
                     }
+                    Divider()
+                    Button("Delete Note…", role: .destructive) { confirmingDelete = true }
                 } label: { Image(systemName: "ellipsis.circle") }
             }
+        }
+        // The vault is the product and there is no undo, so name what goes and ask once.
+        .confirmationDialog("Delete “\(note.title)”?",
+                            isPresented: $confirmingDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) { model.deleteNote(note.id) }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("The note, its transcript and its recording are deleted from the PC, "
+                 + "along with any deadlines this class produced. This can't be undone.")
         }
     }
 

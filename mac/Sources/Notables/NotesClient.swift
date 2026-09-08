@@ -111,6 +111,12 @@ actor NotesClient {
         _ = try await run(request("api/note/\(id)/reprocess", method: "POST", body: Data("{}".utf8)))
     }
 
+    /// Deletes the note and everything derived from it — markdown, transcript, audio,
+    /// deadlines. The server refuses (409) while the note is mid-pipeline.
+    func deleteNote(id: String) async throws {
+        _ = try await run(request("api/note/\(id)", method: "DELETE"))
+    }
+
     // ------------------------------------------------------------- canvas
     struct CanvasUser: Codable, Sendable {
         var id: String
@@ -582,6 +588,7 @@ actor NotesClient {
 
     enum Event: Sendable {
         case note(Note)
+        case noteDeleted(String)
         case todos([Todo])
         case state(id: String, state: String, detail: String?)
         case canvas(CanvasEvent)
@@ -676,6 +683,9 @@ actor NotesClient {
         switch name {
         case "note":
             if let note = try? decoder.decode(Note.self, from: raw) { c.yield(.note(note)) }
+        case "note-deleted":
+            struct Deleted: Decodable { let id: String }
+            if let d = try? decoder.decode(Deleted.self, from: raw) { c.yield(.noteDeleted(d.id)) }
         case "todos":
             struct Wrapper: Decodable { let todos: [Todo] }
             if let w = try? decoder.decode(Wrapper.self, from: raw) { c.yield(.todos(w.todos)) }
