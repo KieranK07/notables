@@ -31,6 +31,13 @@ struct MaterialsList: View {
                                 Spacer()
                                 Text("\(course.fileCount) files")
                                     .font(Theme.Font.caption).foregroundStyle(Theme.inkFaint)
+                                AskClaudeButton(scope: .course(course.course), compact: true)
+                                    .buttonStyle(.borderless)
+                                    .foregroundStyle(Theme.inkFaint)
+                            }
+                            .contextMenu {
+                                AskClaudeButton(scope: .course(course.course),
+                                                title: "Ask Claude about this course")
                             }
                             .listSectionSeparator(.hidden)
                         }
@@ -93,12 +100,27 @@ struct CourseMaterialsSection: View {
                             let sel = MaterialSelection(course: course.course, file: file,
                                                         canvasCourseId: detail.canvasCourseId)
                             MaterialRow(file: file)
+                                .contextMenu {
+                                    AskClaudeButton(scope: .file(file.id, named: file.name,
+                                                                 in: course.course),
+                                                    title: "Ask Claude about this file")
+                                }
                                 .tag(sel)
                                 .quietRowSelection(selected == sel, inset: 4)
                                 .listRowSeparator(.hidden)
                         }
                     } label: {
-                        Text(group.module).font(Theme.Font.body).foregroundStyle(Theme.ink)
+                        HStack(spacing: 6) {
+                            Text(group.module).font(Theme.Font.body).foregroundStyle(Theme.ink)
+                            Spacer()
+                            AskClaudeButton(scope: .module(group.module, in: course.course), compact: true)
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(Theme.inkFaint)
+                        }
+                        .contextMenu {
+                            AskClaudeButton(scope: .module(group.module, in: course.course),
+                                            title: "Ask Claude about this chapter")
+                        }
                     }
                     .listRowSeparator(.hidden)
                     .onChange(of: selected) { _, sel in
@@ -279,6 +301,10 @@ struct MaterialDetailView: View {
             }
 
             Menu {
+                AskClaudeButton(scope: .file(selection.fileID, named: selection.file.name,
+                                             in: selection.course),
+                                title: "Ask Claude about this file")
+                Divider()
                 if let localURL {
                     Button("Open in Default App") { NSWorkspace.shared.open(localURL) }
                     Button("Reveal in Finder") {

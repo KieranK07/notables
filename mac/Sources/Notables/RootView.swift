@@ -75,7 +75,7 @@ struct RootView: View {
             if let sel = materialSelection {
                 MaterialDetailView(selection: sel)
             } else {
-                EmptyState(icon: "books.vertical", title: "Course Materials")
+                EmptyState(icon: "books.vertical", title: "Courses")
             }
         default:
             DetailColumn(model: model)
@@ -126,7 +126,7 @@ struct Sidebar: View {
                     SidebarRow(icon: "calendar", title: "Calendar",
                                selected: model.selection == .calendar)
                         .tag(AppModel.Selection.calendar)
-                    SidebarRow(icon: "books.vertical", title: "Course Materials",
+                    SidebarRow(icon: "books.vertical", title: "Courses",
                                count: model.materials.reduce(0) { $0 + $1.fileCount },
                                selected: model.selection == .materials)
                         .tag(AppModel.Selection.materials)
@@ -263,7 +263,7 @@ struct MiddleColumn: View {
         case .allNotes: return "All Notes"
         case .todos: return "Deadlines"
         case .calendar: return "Calendar"
-        case .materials: return "Course Materials"
+        case .materials: return "Courses"
         case .course(let c): return c
         }
     }

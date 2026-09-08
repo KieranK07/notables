@@ -33,11 +33,41 @@ struct NotablesApp: App {
         }
         .defaultSize(width: 860, height: 680)
 
+        // One window per scope, not a sheet: a study conversation is something you keep
+        // open beside the material it is about.
+        WindowGroup("Ask Claude", id: "chat", for: NotesClient.ChatScope.self) { $scope in
+            if let scope { ChatWindow(scope: scope) }
+        }
+        .defaultSize(width: 660, height: 720)
+
         Settings { SettingsView() }
     }
 
     private var menuBarIcon: String {
         model.recorder.state == .recording ? "record.circle.fill" : "waveform"
+    }
+}
+
+/// Opens a scoped Claude conversation. Like `OpenCanvasButton`, this exists as a *view*
+/// because `openWindow` lives in the view environment, not the `App` struct's.
+struct AskClaudeButton: View {
+    let scope: NotesClient.ChatScope
+    var title = "Ask Claude"
+    var compact = false
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button {
+            NSApp.activate(ignoringOtherApps: true)
+            openWindow(id: "chat", value: scope)
+        } label: {
+            if compact {
+                Image(systemName: "bubble.left.and.text.bubble.right")
+            } else {
+                Label(title, systemImage: "bubble.left.and.text.bubble.right")
+            }
+        }
+        .help("Open a Claude conversation scoped to \(scope.label)")
     }
 }
 

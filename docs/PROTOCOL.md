@@ -109,6 +109,56 @@ event: state    data: {"id":"…","state":"processing","detail":"asking claude"}
 event: todos    data: {"todos":[…]}
 : keepalive                                // every 20s
 ```
+## Scoped Claude conversations
+
+A chat is an ordinary `claude` CLI session whose **working directory is the scope** — a
+course folder, one chapter folder, or the folder holding one file. Claude reads the
+material with its own tools; nothing is pasted into a prompt, chunked, or embedded.
+
+The client never sends a path. It names `{course, module?, fileId?}`, and the server
+resolves that against the Canvas manifest and refuses anything landing outside
+`Course Materials/`.
+
+### `POST /api/chat` — one turn, streamed
+```jsonc
+{ "scope": {"course":"Discrete Mathematics","module":"03 Chapter 0"},  // module/fileId optional
+  "sessionId": "uuid",            // omit for a new conversation; the client may mint it
+  "text": "what does this chapter cover?",
+  "attachments": ["C:\\...\\Chats\\<id>\\attachments\\photo.png"] }
+```
+Responds `application/x-ndjson`, one JSON object per line:
+```
+{"t":"scope","kind":"module","label":"Chapter 0","model":"claude-sonnet-5"}
+{"t":"tool","name":"Grep","detail":"policies.pdf.txt"}
+{"t":"delta","text":"Late homework is "}
+{"t":"done","sessionId":"…","text":"…","meta":{"durationMs":12455,"turns":4}}
+{"t":"error","message":"…"}                 // instead of done
+```
+**Deliberately not SSE.** That channel has been observed dead for hours with the app
+still running (see CLAUDE.md); a chat that silently stops printing is worse than one
+that fails. Here the turn owns its response body, so a dropped connection is an error.
+
+Continuation is the CLI's own `--resume`, so context, compaction and history are its
+problem, not ours. The client may mint the session UUID so it can attach a photo before
+the first turn exists; a malformed one is replaced rather than trusted, since it becomes
+a directory name.
+
+### `POST /api/chat/attachment?session={id}&name={filename}` — raw body, one file
+→ `{"ok":true,"path":"…","name":"…","bytes":123}`. Pass `path` in the next turn's
+`attachments`. Files land beside the session, never in the course folders — a photo of a
+homework sheet is not course material, and the next Canvas sync would rightly wonder
+what it was doing there. Paths are handed to Claude rather than inlined: it has a Read
+tool, and a path costs a few tokens where an inlined photo costs thousands before Claude
+has decided whether it needs to look.
+
+### `GET /api/chat/sessions?course=&module=&fileId=` — the resume list, newest first
+### `GET /api/chat/session/{id}` — the stored transcript, for redrawing
+### `DELETE /api/chat/session/{id}` — drops the transcript and its attachments
+
+Tools are restricted to reads and search (`NOTABLES_CHAT_TOOLS`): a study chat has no
+business editing the vault, and a headless session cannot raise a permission prompt to
+ask. The model is pinned to `claude-sonnet-5` (`NOTABLES_CHAT_MODEL`).
+
 ### `POST /api/note/{id}/reprocess` — re-run the Claude pass on a stored transcript
 ### `GET  /api/health` → `{"ok":true,"version","vault","queueDepth","claudeOk"}`
 

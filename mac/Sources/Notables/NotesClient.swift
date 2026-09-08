@@ -387,6 +387,197 @@ actor NotesClient {
         return (r.url ?? config.baseURL, ["Authorization": "Bearer \(config.token)"])
     }
 
+    // MARK: - Chat
+
+    /// What a conversation is scoped to. Identifies a directory on the PC by naming
+    /// things the manifest already knows — the app never sends a path, so there is no
+    /// route for one to be forged.
+    struct ChatScope: Codable, Hashable, Identifiable, Sendable {
+        var course: String
+        var module: String?
+        var fileId: String?
+        /// For the window title; the server derives its own from the manifest.
+        var label: String
+        /// course | module | file
+        var kind: String
+
+        var id: String { [course, module ?? "", fileId ?? ""].joined(separator: "\u{1}") }
+
+        static func course(_ name: String) -> ChatScope {
+            ChatScope(course: name, module: nil, fileId: nil, label: name, kind: "course")
+        }
+        static func module(_ folder: String, in course: String) -> ChatScope {
+            ChatScope(course: course, module: folder, fileId: nil,
+                      label: folder.replacingOccurrences(of: #"^\d+\s+"#, with: "",
+                                                         options: .regularExpression),
+                      kind: "module")
+        }
+        static func file(_ id: String, named name: String, in course: String) -> ChatScope {
+            ChatScope(course: course, module: nil, fileId: id, label: name, kind: "file")
+        }
+    }
+
+    enum ChatEvent: Sendable {
+        case started(model: String, label: String)
+        case delta(String)
+        case tool(name: String, detail: String)
+        case done(sessionId: String, text: String, seconds: Double?)
+        case failed(String)
+    }
+
+    struct ChatSession: Codable, Hashable, Identifiable, Sendable {
+        var id: String
+        var title: String
+        var label: String?
+        var kind: String?
+        var updatedAt: String
+        var messages: Int
+    }
+
+    struct ChatTranscript: Codable, Sendable {
+        var id: String
+        var messages: [Message]
+        struct Message: Codable, Sendable, Identifiable {
+            var role: String
+            var text: String
+            var at: String?
+            var attachments: [String]?
+            var id: String { (at ?? "") + role + String(text.prefix(24)) }
+        }
+    }
+
+    private struct ChatRequest: Encodable {
+        var scope: ChatScope
+        var sessionId: String?
+        var text: String
+        var attachments: [String]
+    }
+
+    /// One turn, streamed as newline-delimited JSON.
+    ///
+    /// Not the SSE channel: that stream has been seen dying silently for hours, and a
+    /// chat that quietly stops printing is worse than one that fails loudly. This turn
+    /// owns its own response body, so a dead connection surfaces as a thrown error.
+    nonisolated func chatStream(scope: ChatScope, sessionId: String?, text: String,
+                                attachments: [String]) -> AsyncThrowingStream<ChatEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    try await self.streamChat(scope: scope, sessionId: sessionId, text: text,
+                                              attachments: attachments, into: continuation)
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private struct ChatWire: Decodable {
+        var t: String
+        var text: String?
+        var name: String?
+        var detail: String?
+        var message: String?
+        var sessionId: String?
+        var label: String?
+        var model: String?
+        var meta: Meta?
+        struct Meta: Decodable { var durationMs: Double?; var costUsd: Double?; var turns: Int? }
+    }
+
+    private func streamChat(scope: ChatScope, sessionId: String?, text: String,
+                            attachments: [String],
+                            into continuation: AsyncThrowingStream<ChatEvent, Error>.Continuation) async throws {
+        var r = request("api/chat", method: "POST",
+                        body: try JSONEncoder().encode(ChatRequest(scope: scope, sessionId: sessionId,
+                                                                   text: text, attachments: attachments)))
+        // A turn that reads several PDFs genuinely takes a while; the server's own
+        // claude timeout is the real ceiling.
+        r.timeoutInterval = 900
+
+        let (bytes, response) = try await session.bytes(for: r)
+        if let http = response as? HTTPURLResponse {
+            if http.statusCode == 401 { throw ClientError.unauthorized }
+            guard (200..<300).contains(http.statusCode) else {
+                var body = ""
+                for try await b in bytes { body.append(Character(UnicodeScalar(b))) }
+                throw ClientError.server(http.statusCode, Self.errorText(body))
+            }
+        }
+
+        // Raw bytes, not `.lines` — same reason as the SSE parser.
+        var buffer: [UInt8] = []
+        for try await byte in bytes {
+            guard byte == 0x0A else { buffer.append(byte); continue }
+            let line = String(decoding: buffer, as: UTF8.self)
+            buffer.removeAll(keepingCapacity: true)
+            guard !line.isEmpty, let ev = try? Self.decoder.decode(ChatWire.self, from: Data(line.utf8))
+            else { continue }
+            switch ev.t {
+            case "scope":    continuation.yield(.started(model: ev.model ?? "", label: ev.label ?? scope.label))
+            case "delta":    if let t = ev.text { continuation.yield(.delta(t)) }
+            case "tool":     continuation.yield(.tool(name: ev.name ?? "", detail: ev.detail ?? ""))
+            case "done":
+                continuation.yield(.done(sessionId: ev.sessionId ?? "", text: ev.text ?? "",
+                                         seconds: ev.meta?.durationMs.map { $0 / 1000 }))
+            case "error":    continuation.yield(.failed(ev.message ?? "Claude reported an error."))
+            default:         break
+            }
+        }
+    }
+
+    /// Pull the server's `{"ok":false,"error":"…"}` out of a failed response.
+    private static func errorText(_ body: String) -> String {
+        guard let d = body.data(using: .utf8),
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+              let e = o["error"] as? String else { return body }
+        return e
+    }
+
+    /// Put one photo or file on the PC and get back the path to reference in the turn.
+    func uploadChatAttachment(sessionId: String, name: String, data: Data) async throws -> String {
+        let q = "session=\(Self.esc(sessionId))&name=\(Self.esc(name))"
+        var r = request("api/chat/attachment?" + q, method: "POST")
+        r.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        r.timeoutInterval = 300
+
+        let (out, response): (Data, URLResponse)
+        do { (out, response) = try await session.upload(for: r, from: data) }
+        catch { throw ClientError.offline("Couldn't send the attachment — is the PC awake?") }
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            if http.statusCode == 401 { throw ClientError.unauthorized }
+            throw ClientError.server(http.statusCode, String(data: out, encoding: .utf8) ?? "")
+        }
+        struct Reply: Codable { var path: String }
+        return try Self.decoder.decode(Reply.self, from: out).path
+    }
+
+    private struct SessionsReply: Codable { var sessions: [ChatSession] }
+
+    func chatSessions(scope: ChatScope?) async throws -> [ChatSession] {
+        var q = ""
+        if let s = scope {
+            q = "?course=\(Self.esc(s.course))"
+                + "&module=\(Self.esc(s.module ?? ""))"
+                + "&fileId=\(Self.esc(s.fileId ?? ""))"
+        }
+        let data = try await run(request("api/chat/sessions" + q))
+        return try Self.decoder.decode(SessionsReply.self, from: data).sessions
+    }
+
+    private struct TranscriptReply: Codable { var session: ChatTranscript }
+
+    func chatTranscript(id: String) async throws -> ChatTranscript {
+        let data = try await run(request("api/chat/session/\(Self.esc(id))"))
+        return try Self.decoder.decode(TranscriptReply.self, from: data).session
+    }
+
+    func deleteChatSession(id: String) async throws {
+        _ = try await run(request("api/chat/session/\(Self.esc(id))", method: "DELETE"))
+    }
+
     // MARK: - SSE
 
     enum Event: Sendable {

@@ -20,6 +20,7 @@ const whisper = require('./lib/whisper');
 const pipeline = require('./lib/pipeline');
 const canvas = require('./lib/canvas');
 const materials = require('./lib/materials');
+const chat = require('./lib/chat');
 
 const startedAt = Date.now();
 
@@ -118,6 +119,25 @@ function readBody(req, limit) {
       chunks.push(c);
     });
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
+/** Same limit discipline as readBody, but keeps the bytes - photos are not utf8. */
+function readRawBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', c => {
+      size += c.length;
+      if (size > limit) {
+        reject(Object.assign(new Error('body too large'), { code: 'TOO_LARGE' }));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
 }
@@ -697,6 +717,102 @@ function handleMaterials(req, res, url) {
   send(res, 200, { ok: true, courses: out, syncing: materials.isSyncing(), lastSync: materials.last() }, CORS);
 }
 
+// -------------------------------------------------------------------- chat
+/**
+ * POST /api/chat - one turn, streamed back as newline-delimited JSON.
+ *
+ * Deliberately NOT over the SSE channel. That stream has been observed dying silently
+ * for hours (see CLAUDE.md), and a chat that quietly stops printing is worse than no
+ * chat. Here the turn owns its own response body: if the connection drops, the request
+ * visibly fails.
+ */
+async function handleChat(req, res) {
+  const body = await readJsonBody(req, res);
+  if (!body) return;
+
+  const text = util.asString(body.text).trim();
+  const attachments = Array.isArray(body.attachments) ? body.attachments.map(String) : [];
+  if (!text && !attachments.length) return fail(res, 400, 'text is required');
+
+  let scope;
+  try { scope = chat.resolveScope(body.scope || {}); }
+  catch (e) { return fail(res, e.code === 'NO_COURSE' || e.code === 'NO_FILE' ? 404 : 400, e.message); }
+
+  res.writeHead(200, Object.assign({
+    'Content-Type': 'application/x-ndjson; charset=utf-8',
+    'Cache-Control': 'no-store',
+    // Nothing between here and the Mac should be holding these lines back.
+    'X-Accel-Buffering': 'no',
+  }, CORS));
+
+  const write = obj => { try { res.write(JSON.stringify(obj) + '\n'); } catch (_) {} };
+  write({ t: 'scope', kind: scope.kind, label: scope.label, course: scope.course, model: chat.MODEL });
+
+  let closed = false;
+  req.on('close', () => { closed = true; });
+
+  try {
+    const out = await chat.send({
+      scope: body.scope || {},
+      sessionId: util.asString(body.sessionId).trim() || null,
+      text,
+      attachments,
+      onEvent: e => { if (!closed) write(e); },
+    });
+    write({ t: 'done', sessionId: out.id, text: out.text, meta: out.meta });
+  } catch (e) {
+    log.error('chat turn failed -', e.message);
+    write({ t: 'error', message: e.message });
+  }
+  try { res.end(); } catch (_) {}
+}
+
+/** GET /api/chat/sessions - the resume list, newest first. */
+function handleChatSessions(req, res, url) {
+  const course = url.searchParams.get('course');
+  const scope = course ? {
+    course,
+    module: url.searchParams.get('module') || '',
+    fileId: url.searchParams.get('fileId') || '',
+  } : null;
+  send(res, 200, { ok: true, model: chat.MODEL, sessions: chat.listSessions(scope) }, CORS);
+}
+
+/** GET /api/chat/session/{id} - the stored transcript, so the app can redraw it. */
+function handleChatSession(req, res, id) {
+  const t = chat.readTranscript(id);
+  if (!t) return fail(res, 404, 'no such conversation');
+  send(res, 200, { ok: true, session: t }, CORS);
+}
+
+function handleChatSessionDelete(req, res, id) {
+  if (!chat.deleteSession(id)) return fail(res, 404, 'no such conversation');
+  send(res, 200, { ok: true, id }, CORS);
+}
+
+/**
+ * POST /api/chat/attachment?session=<id>&name=<filename> - raw body, one file.
+ * Returns the absolute path, which the next /api/chat call passes in `attachments`.
+ */
+async function handleChatAttachment(req, res, url) {
+  const sessionId = util.asString(url.searchParams.get('session')).trim();
+  const name = util.asString(url.searchParams.get('name')).trim() || 'upload';
+  if (!/^[0-9a-fA-F-]{8,64}$/.test(sessionId)) return fail(res, 400, 'a session id is required');
+
+  let buf;
+  try { buf = await readRawBody(req, cfg.MAX_BODY_BYTES); }
+  catch (e) { return fail(res, e.code === 'TOO_LARGE' ? 413 : 400, e.message); }
+  if (!buf.length) return fail(res, 400, 'empty body');
+
+  try {
+    const file = chat.saveAttachment(sessionId, name, buf);
+    log.info('chat attachment', path.basename(file), buf.length, 'bytes');
+    send(res, 200, { ok: true, path: file, name: path.basename(file), bytes: buf.length }, CORS);
+  } catch (e) {
+    fail(res, 500, 'could not save the attachment: ' + e.message);
+  }
+}
+
 // ------------------------------------------------------------------ router
 const server = http.createServer(async (req, res) => {
   let url;
@@ -743,6 +859,14 @@ const server = http.createServer(async (req, res) => {
 
     m = /^\/api\/audio\/([^/]+)\/status$/.exec(p);
     if (m && method === 'GET') return handleAudioStatus(req, res, decodeURIComponent(m[1]));
+
+    if (p === '/api/chat' && method === 'POST') return await handleChat(req, res);
+    if (p === '/api/chat/sessions' && method === 'GET') return handleChatSessions(req, res, url);
+    if (p === '/api/chat/attachment' && method === 'POST') return await handleChatAttachment(req, res, url);
+
+    m = /^\/api\/chat\/session\/([^/]+)$/.exec(p);
+    if (m && method === 'GET') return handleChatSession(req, res, decodeURIComponent(m[1]));
+    if (m && method === 'DELETE') return handleChatSessionDelete(req, res, decodeURIComponent(m[1]));
 
     m = /^\/api\/note\/([^/]+)\/reprocess$/.exec(p);
     if (m && method === 'POST') {
