@@ -94,8 +94,8 @@ final class AppModel: ObservableObject {
 
     func onAppear() {
         guard eventTask == nil else { return }
-        // The recording is on the PC, so playback has to go and get it.
-        player.fetch = { [client] id in try await client.downloadAudio(id: id) }
+        // The recording is on the PC, so playback streams it from there.
+        player.streamSource = { [client] id in await client.audioStreamSource(id: id) }
         eventTask = Task { await self.listen() }
         outboxTask = Task { await self.drainOutboxLoop() }
         Task { await refresh() }

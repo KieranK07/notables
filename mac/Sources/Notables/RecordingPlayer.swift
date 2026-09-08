@@ -3,7 +3,9 @@ import SwiftUI
 /// The transport for a lecture recording, shown under the note header.
 ///
 /// Collapsed to a single button until you ask for it: the audio lives on the PC now, and
-/// fetching 15 MB because a note happened to be selected would be rude to both machines.
+/// opening a connection because a note happened to be selected would be rude to both
+/// machines. Pressing play streams it — the transport appears at once and buffers in
+/// place rather than making you wait behind a spinner.
 struct RecordingPlayer: View {
     @ObservedObject var player: AudioPlayer
     let note: Note
@@ -59,7 +61,7 @@ struct RecordingPlayer: View {
         HStack(spacing: Theme.Space.m) {
             ProgressView().controlSize(.small)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Fetching from the PC…").font(Theme.Font.headline).foregroundStyle(Theme.ink)
+                Text("Connecting to the PC…").font(Theme.Font.headline).foregroundStyle(Theme.ink)
                 Text(length > 0 ? Dates.minutes(length) : "")
                     .font(Theme.Font.caption).foregroundStyle(Theme.inkFaint)
             }
@@ -90,13 +92,21 @@ struct RecordingPlayer: View {
     private var transport: some View {
         HStack(spacing: Theme.Space.m) {
             Button { player.toggle() } label: {
-                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 12))
-                    .frame(width: 26, height: 26)
+                ZStack {
+                    // Buffering replaces the glyph rather than moving anything: the
+                    // transport must not resize while it waits on the network.
+                    if player.buffering {
+                        ProgressView().controlSize(.small).scaleEffect(0.7)
+                    } else {
+                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 12))
+                    }
+                }
+                .frame(width: 26, height: 26)
             }
             .buttonStyle(.borderless)
             .background(Theme.accentSoft, in: Circle())
-            .help(player.isPlaying ? "Pause" : "Play")
+            .help(player.buffering ? "Buffering…" : (player.isPlaying ? "Pause" : "Play"))
 
             Button { player.skip(-15) } label: {
                 Image(systemName: "gobackward.15").font(.system(size: 13))

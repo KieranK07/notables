@@ -377,32 +377,14 @@ actor NotesClient {
         return try Self.decoder.decode(AudioStatus.self, from: data)
     }
 
-    /// Pull a recording back down to a temporary file — the Mac keeps no permanent copy
-    /// once a note is ready, so anything that wants the audio fetches it on demand and
-    /// lets the OS reclaim it. The caller owns the returned file.
-    func downloadAudio(id: String) async throws -> URL {
-        var r = request("api/audio/\(id)")
-        r.timeoutInterval = 600
-
-        let (temp, response): (URL, URLResponse)
-        do { (temp, response) = try await session.download(for: r) }
-        catch { throw ClientError.offline("Couldn't fetch the recording — is the PC awake?") }
-
-        if let http = response as? HTTPURLResponse {
-            if http.statusCode == 401 { throw ClientError.unauthorized }
-            guard (200..<300).contains(http.statusCode) else {
-                try? FileManager.default.removeItem(at: temp)
-                throw ClientError.server(http.statusCode, "the PC has no audio for this note")
-            }
-        }
-
-        // `session.download` names the file for its own bookkeeping and deletes it the
-        // moment this call returns, so move it somewhere the caller can actually use.
-        let dest = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Notables-\(id).m4a")
-        try? FileManager.default.removeItem(at: dest)
-        try FileManager.default.moveItem(at: temp, to: dest)
-        return dest
+    /// Everything `AVURLAsset` needs to stream a recording straight off the PC.
+    ///
+    /// Streaming rather than downloading is the whole point: the server honours Range, so
+    /// playback starts on the first few seconds instead of waiting out a 15 MB transfer,
+    /// and the wait no longer grows with the length of the lecture.
+    func audioStreamSource(id: String) -> (url: URL, headers: [String: String]) {
+        let r = request("api/audio/\(id)")
+        return (r.url ?? config.baseURL, ["Authorization": "Bearer \(config.token)"])
     }
 
     // MARK: - SSE
