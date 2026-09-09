@@ -164,7 +164,7 @@ async function readJsonBody(req, res) {
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
   'Access-Control-Max-Age': '86400',
 };
 
@@ -503,6 +503,39 @@ function handleTodoDone(req, res, id, done) {
   store.save(true);
   send(res, 200, { ok: true, todo: t }, CORS);
   pipeline.emitTodos();
+}
+
+/**
+ * PATCH /api/note/{id} - rename a note.
+ *
+ * Only the student's typed title. The course, topic, section and dates are Claude's
+ * output and the vault path is derived from them, so a rename never moves a file - which
+ * is what keeps this cheap enough to do from a context menu.
+ */
+async function handleNoteRename(req, res, id) {
+  const note = store.getNote(id);
+  if (!note) return fail(res, 404, 'unknown id ' + id);
+
+  const body = await readJsonBody(req, res);
+  if (!body) return;
+  const title = util.asString(body.title).trim();
+  if (!title) return fail(res, 400, 'a non-empty title is required');
+  if (title.length > 200) return fail(res, 400, 'title is too long (max 200 characters)');
+
+  const before = note.title;
+  note.title = title;
+  store.putNote(note);
+  store.save(true);
+
+  if (note.notePath) vault.setNoteSourceTitle(note.notePath, title);
+  // A note still holding an inbox payload has not been filed yet; reprocessing it reads
+  // the title back from there and would otherwise re-render under the old name.
+  const inbox = vault.readInbox(id);
+  if (inbox) { inbox.title = title; vault.saveInbox(inbox); }
+
+  log.info('renamed note', id, JSON.stringify(util.asString(before)), '->', JSON.stringify(title));
+  send(res, 200, { ok: true, id, title }, CORS);
+  sse.broadcast('note', note);
 }
 
 /**
@@ -920,6 +953,7 @@ const server = http.createServer(async (req, res) => {
     m = /^\/api\/note\/([^/]+)$/.exec(p);
     if (m && method === 'GET') return handleNote(req, res, decodeURIComponent(m[1]));
     if (m && method === 'DELETE') return handleNoteDelete(req, res, decodeURIComponent(m[1]));
+    if (m && method === 'PATCH') return await handleNoteRename(req, res, decodeURIComponent(m[1]));
 
     m = /^\/api\/todo\/([^/]+)\/(done|undone)$/.exec(p);
     if (m && method === 'POST') return handleTodoDone(req, res, decodeURIComponent(m[1]), m[2] === 'done');

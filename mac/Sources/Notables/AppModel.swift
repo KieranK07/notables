@@ -256,6 +256,23 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Renames a note on the PC. The server owns the vault — it writes the new title into
+    /// the note's front matter as well as the index — so this waits for it to confirm and
+    /// then applies the same change here rather than guessing ahead of it.
+    func renameNote(_ id: String, to newTitle: String) {
+        let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, title != notes.first(where: { $0.id == id })?.title else { return }
+        Task {
+            do {
+                try await client.renameNote(id: id, title: title)
+                if let i = notes.firstIndex(where: { $0.id == id }) { notes[i].title = title }
+                if selectedNoteID == id { await loadDetail(id) }
+            } catch {
+                banner = error.localizedDescription
+            }
+        }
+    }
+
     /// Deletes a note on the PC and drops it here. The server owns the vault, so this waits
     /// for it to confirm before touching local state — and only then releases this Mac's
     /// copy of the audio, which is otherwise held until `safeToDelete`, a flag a deleted

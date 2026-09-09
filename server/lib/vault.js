@@ -219,6 +219,33 @@ function renderNote(note, ai, transcriptRelPath) {
   return out.join('\n');
 }
 
+/**
+ * Rewrite `source_title:` in a note's front matter.
+ *
+ * The student's typed title lives in the markdown as well as in `_index.json` - that is
+ * exactly what makes `rebuildIndex()` lossless - so a rename that touched only the index
+ * would be silently undone by the next reindex. Only that one line moves; the note body,
+ * and every field Claude produced, are left alone.
+ */
+function setNoteSourceTitle(relPath, title) {
+  const absPath = abs(relPath);
+  let raw;
+  try { raw = fs.readFileSync(absPath, 'utf8'); } catch (_) { return false; }
+
+  const eol = raw.includes('\r\n') ? '\r\n' : '\n';
+  const lines = raw.split(/\r?\n/);
+  if (lines[0] !== '---') return false;
+  const close = lines.indexOf('---', 1);
+  if (close === -1) return false;
+
+  const line = 'source_title: ' + yamlScalar(title);
+  const at = lines.findIndex((l, i) => i > 0 && i < close && /^source_title:/.test(l));
+  if (at !== -1) lines[at] = line;
+  else lines.splice(close, 0, line);      // a note written before the field existed
+  fs.writeFileSync(absPath, lines.join(eol), 'utf8');
+  return true;
+}
+
 function notePathFor(course, classDate, topic, keepAbs) {
   const dir = path.join(cfg.DIRS.notes, sanitizeName(course, 'Uncategorized'));
   const base = classDate + SEP + sanitizeName(topic, 'Untitled');
@@ -437,5 +464,6 @@ module.exports = {
   unsortedBase, unsortedTxt, unsortedJson,
   writeUnsortedTranscript, transcriptTextFromFile, placeTranscript,
   renderNote, notePathFor, writeNoteFile, readNoteMarkdown, readNoteTranscript, removeFileQuiet,
+  setNoteSourceTitle,
   appendCapture, parseFrontMatter, sectionBody, rebuildIndex,
 };

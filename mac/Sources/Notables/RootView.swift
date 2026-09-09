@@ -273,6 +273,8 @@ struct NoteList: View {
     @ObservedObject var model: AppModel
     /// Set by the row's context menu; drives one confirmation sheet for the whole list.
     @State private var pendingDelete: Note?
+    @State private var pendingRename: Note?
+    @State private var renameDraft = ""
 
     var body: some View {
         let notes = model.visibleNotes
@@ -291,6 +293,10 @@ struct NoteList: View {
                                 .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
                                 .listRowSeparator(.hidden)
                                 .contextMenu {
+                                    Button("Rename…") {
+                                        renameDraft = note.title
+                                        pendingRename = note
+                                    }
                                     Button("Re-run notes pass") { model.reprocess(note.id) }
                                     Divider()
                                     Button("Delete Note…", role: .destructive) {
@@ -308,6 +314,18 @@ struct NoteList: View {
             .listStyle(.inset)
             .scrollContentBackground(.hidden)
             .background(Theme.canvas)
+            .alert("Rename note", isPresented: Binding(get: { pendingRename != nil },
+                                                       set: { if !$0 { pendingRename = nil } })) {
+                TextField("Title", text: $renameDraft)
+                Button("Rename") {
+                    if let n = pendingRename { model.renameNote(n.id, to: renameDraft) }
+                    pendingRename = nil
+                }
+                Button("Cancel", role: .cancel) { pendingRename = nil }
+            } message: {
+                Text("This is the name you typed while recording. The course, topic and "
+                     + "section Claude worked out stay as they are.")
+            }
             .confirmationDialog("Delete “\(pendingDelete?.title ?? "")”?",
                                 isPresented: Binding(get: { pendingDelete != nil },
                                                      set: { if !$0 { pendingDelete = nil } }),

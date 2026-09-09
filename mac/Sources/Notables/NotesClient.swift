@@ -111,6 +111,13 @@ actor NotesClient {
         _ = try await run(request("api/note/\(id)/reprocess", method: "POST", body: Data("{}".utf8)))
     }
 
+    /// Renames a note. Only the typed title moves; the course, topic and vault path are
+    /// derived from Claude's output and stay put.
+    func renameNote(id: String, title: String) async throws {
+        let body = try JSONEncoder().encode(["title": title])
+        _ = try await run(request("api/note/\(id)", method: "PATCH", body: body))
+    }
+
     /// Deletes the note and everything derived from it — markdown, transcript, audio,
     /// deadlines. The server refuses (409) while the note is mid-pipeline.
     func deleteNote(id: String) async throws {

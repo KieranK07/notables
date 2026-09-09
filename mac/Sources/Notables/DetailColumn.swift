@@ -4,6 +4,8 @@ struct DetailColumn: View {
     @ObservedObject var model: AppModel
     @State private var showTranscript = false
     @State private var confirmingDelete = false
+    @State private var renaming = false
+    @State private var renameDraft = ""
 
     private var note: Note? {
         guard let id = model.selectedNoteID else { return nil }
@@ -80,6 +82,10 @@ struct DetailColumn: View {
                 .frame(width: 168)
 
                 Menu {
+                    Button("Rename…") {
+                        renameDraft = note.title
+                        renaming = true
+                    }
                     Button("Re-run notes pass") { model.reprocess(note.id) }
                     if let p = note.notePath {
                         Button("Copy vault path") {
@@ -95,6 +101,14 @@ struct DetailColumn: View {
                     Button("Delete Note…", role: .destructive) { confirmingDelete = true }
                 } label: { Image(systemName: "ellipsis.circle") }
             }
+        }
+        .alert("Rename note", isPresented: $renaming) {
+            TextField("Title", text: $renameDraft)
+            Button("Rename") { model.renameNote(note.id, to: renameDraft) }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This is the name you typed while recording. The course, topic and "
+                 + "section Claude worked out stay as they are.")
         }
         // The vault is the product and there is no undo, so name what goes and ask once.
         .confirmationDialog("Delete “\(note.title)”?",

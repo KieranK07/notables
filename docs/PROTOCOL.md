@@ -102,6 +102,19 @@ confirmation and the Mac app shows the classified result over SSE moments later.
 ```
 
 ### `GET /api/note/{id}` → `{ …meta, "markdown":"…", "transcript":"…" }`
+### `PATCH /api/note/{id}` — rename a note
+```jsonc
+{ "title": "csc261 9/9" }        // the student's typed title, 1-200 chars
+```
+→ `200 {"ok":true,"id":"…","title":"csc261 9/9"}`
+
+Renames **only** the typed title. `course`, `topic`, `section` and the dates are Claude's
+output and the vault path is derived from them, so a rename never moves a file.
+
+The title is stored in two places and both are written: `_index.json`, and `source_title:`
+in the note's front matter — the latter is what makes `rebuildIndex()` lossless, so an
+index-only rename would be undone by the next reindex. Broadcasts `note`.
+
 ### `DELETE /api/note/{id}` — remove a note and everything derived from it
 → `200 {"ok":true,"id":"…","removed":["Notes/…","Transcripts/…","Audio/….m4a"]}`
 
