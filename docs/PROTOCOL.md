@@ -101,6 +101,16 @@ confirmation and the Mac app shows the classified result over SSE moments later.
   "todos":[{ "id","text","due","course","done","source" }] }
 ```
 
+### The MCP listener — a **second port**, publicly reachable
+`POST http://<host>:8788/mcp/<secret>` — MCP Streamable HTTP, JSON-RPC 2.0, stateless.
+Defined in `server/lib/mcp.js`; carried by the stdio bridge in `mcp/` and by
+`https://notables.chadnerd.lol/mcp/<secret>` through the PC's Cloudflare tunnel.
+
+**This port is on the public internet and `8787` is not.** That is the whole reason it is
+a separate listener: it serves exactly one route, refuses `GET`, and holds its own secret
+in `~/.notables/mcp-token`. Never move `/api/*` onto it, and never point the tunnel at
+`8787` — a `DELETE /api/note/{id}` reachable from the internet loses a lecture.
+
 ### `GET /api/search?q=&course=&kind=&limit=&regex=` — full text across the vault
 ```jsonc
 { "ok":true, "query":"relational algebra", "scanned":93, "matched":14, "truncated":false,

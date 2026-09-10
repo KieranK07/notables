@@ -38,22 +38,49 @@ note:<noteId>                        the markdown study notes
 transcript:<noteId>                  the verbatim lecture transcript
 ```
 
-## How it fits together
-
-This is a **stdio proxy**, not MCP hosted on the PC:
+## Two transports, one definition
 
 ```
-Claude (Mac or PC)  ──stdio JSON-RPC──▶  notables-mcp.js  ──HTTP/Tailscale──▶  note server (PC)
+Claude Code  ──stdio──▶ notables-mcp.js ───┐
+                                          ├─▶ :8788 /mcp/<secret> ─▶ server/lib/mcp.js
+claude.ai ──https──▶ notables.chadnerd.lol ┘        (the note server, on the PC)
+                      (Cloudflare tunnel)
 ```
 
-It runs wherever the Claude instance runs, so one file serves every machine on the tailnet
-and the note server keeps its single HTTP surface. It reads `~/.notables/token` (override
-with `NOTABLES_TOKEN`) and talks to `http://100.69.103.126:8787` (override with
-`NOTABLES_URL` — use `http://127.0.0.1:8787` on the PC itself).
+`server/lib/mcp.js` is the **single definition** of the tools — schemas, prose, formatting.
+Neither transport owns any of it. Two copies of five tool descriptions would drift, and a
+drifted description is a tool the model calls wrongly.
+
+`mcp/notables-mcp.js` is therefore a bridge and nothing else: newline-delimited JSON-RPC in
+on stdin, POSTed to the same endpoint, reply out on stdout. It reads the secret from
+`~/.notables/mcp-token` (override with `NOTABLES_MCP_TOKEN`, or give the whole URL as
+`NOTABLES_MCP_URL`) and defaults to `http://100.69.103.126:8788` — set
+`NOTABLES_MCP_HOST=http://127.0.0.1:8788` on the PC itself.
 
 **Zero npm dependencies**, matching the rule the rest of the project is built on. MCP over
-stdio is newline-delimited JSON-RPC 2.0; the handful of methods a tools-only server needs
-(`initialize`, `tools/list`, `tools/call`, `ping`) are implemented directly.
+stdio is newline-delimited JSON-RPC 2.0; over HTTP it is Streamable HTTP, stateless (no
+`Mcp-Session-Id`, so a server restart never strands a conversation). The handful of methods
+a tools-only server needs (`initialize`, `tools/list`, `tools/call`, `ping`) are
+implemented directly.
+
+## claude.ai
+
+The endpoint is `https://notables.chadnerd.lol/mcp/<secret>` — add it in Settings →
+Connectors → Add custom connector, the same shape as the `mem` and `nexus` connectors.
+
+**It is on the public internet, so the exposure is deliberately narrow:**
+
+| | |
+|---|---|
+| Port | `8788`, a **second listener** — never `8787`, which serves `/api/*` and can delete a lecture |
+| Route | exactly one: `POST /mcp/<secret>`. Everything else 404s, including every `/api/*` path |
+| Secret | its own, in `~/.notables/mcp-token`, separate from the API token; compared with `timingSafeEqual` |
+| Tools | read-only, plus `resync` (re-pulls Canvas; cannot delete anything) |
+| `GET` | 405 — nothing here ever pushes to the client |
+
+The Cloudflare tunnel (`nexus`, a scheduled task on the PC) maps the hostname to
+`127.0.0.1:8788`. cloudflared dials **out**, so no inbound port is opened — which is also
+why it works behind the campus NAT that forces Tailscale itself onto a DERP relay.
 
 **Searching happens on the PC**, never here. The Mac↔PC link is a DERP relay at ~1.6 MB/s
 and the extracted material text is well past a megabyte, so this process moves questions

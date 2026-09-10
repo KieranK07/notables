@@ -19,6 +19,7 @@ const claude = require('./lib/claude');
 const whisper = require('./lib/whisper');
 const pipeline = require('./lib/pipeline');
 const search = require('./lib/search');
+const mcp = require('./lib/mcp');
 const canvas = require('./lib/canvas');
 const materials = require('./lib/materials');
 const chat = require('./lib/chat');
@@ -1158,11 +1159,126 @@ function main() {
     startCanvasSchedule();
   });
 
+  startMcpListener();
+
   const bye = sig => () => { log.info('shutting down on ' + sig); store.save(true); process.exit(0); };
   process.on('SIGINT', bye('SIGINT'));
   process.on('SIGTERM', bye('SIGTERM'));
   process.on('uncaughtException', e => { log.error('uncaught:', e.stack || e.message); });
   process.on('unhandledRejection', e => { log.error('unhandled rejection:', (e && e.stack) || e); });
+}
+
+// ==================================================== the MCP listener (public)
+//
+// Separate port, separate secret, one route. The Cloudflare tunnel on this PC maps
+// notables.chadnerd.lol to it, so everything here is reachable from the internet -
+// which is exactly why /api/* is not on this listener. The only way in is
+// POST /mcp/<secret>, and the tools behind it read the vault or re-pull Canvas.
+//
+// MCP's Streamable HTTP transport: the client POSTs a JSON-RPC message and gets one
+// back as application/json. GET is for server-initiated streams, which a tools-only
+// server has no use for, so it is refused. The session is stateless - no
+// Mcp-Session-Id is issued, which the spec allows and which means a restart here
+// never strands a conversation.
+function mcpSecret() {
+  try {
+    const t = fs.readFileSync(cfg.MCP_TOKEN_FILE, 'utf8').trim();
+    if (t) return t;
+  } catch (_) {}
+  // Mint one on first run rather than making the tunnel the thing that fails.
+  const t = crypto.randomBytes(24).toString('base64url');
+  try {
+    fs.mkdirSync(path.dirname(cfg.MCP_TOKEN_FILE), { recursive: true });
+    fs.writeFileSync(cfg.MCP_TOKEN_FILE, t + '\n', 'utf8');
+    log.info('minted a new MCP secret at', cfg.MCP_TOKEN_FILE);
+  } catch (e) {
+    log.error('could not persist the MCP secret:', e.message);
+  }
+  return t;
+}
+
+function mcpDeny(res, code, why) {
+  // Same body for a bad secret and a bad path: an unauthenticated caller learns
+  // nothing about which part it got wrong.
+  res.writeHead(code, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: why }));
+}
+
+const mcpServer = http.createServer(async (req, res) => {
+  let url;
+  try { url = new URL(req.url, 'http://mcp.local'); }
+  catch (_) { return mcpDeny(res, 400, 'bad request'); }
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Content-Type, Mcp-Session-Id, MCP-Protocol-Version',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    });
+    return res.end();
+  }
+
+  const m = /^\/mcp\/([A-Za-z0-9_-]{16,128})$/.exec(url.pathname);
+  if (!m || !timingSafeEq(m[1], mcpSecret())) {
+    log.warn('mcp: rejected', req.method, url.pathname, 'from',
+             req.headers['cf-connecting-ip'] || req.socket.remoteAddress);
+    return mcpDeny(res, 404, 'not found');
+  }
+  if (req.method !== 'POST') {
+    // GET would open a server->client SSE stream; nothing here ever pushes.
+    res.writeHead(405, { 'Content-Type': 'application/json', Allow: 'POST, OPTIONS' });
+    return res.end(JSON.stringify({ error: 'this MCP endpoint accepts POST only' }));
+  }
+
+  let raw;
+  try { raw = await readBody(req, 4 * 1024 * 1024); }
+  catch (e) { return mcpDeny(res, 400, 'could not read the body: ' + e.message); }
+
+  let msg;
+  try { msg = JSON.parse(raw); }
+  catch (e) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({
+      jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error: ' + e.message },
+    }));
+  }
+
+  try {
+    // A batch is legal JSON-RPC; answer each and drop the notifications' nulls.
+    if (Array.isArray(msg)) {
+      const replies = (await Promise.all(msg.map(one => mcp.handleMessage(one)))).filter(Boolean);
+      if (!replies.length) { res.writeHead(202); return res.end(); }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(replies));
+    }
+    const reply = await mcp.handleMessage(msg);
+    if (!reply) { res.writeHead(202); return res.end(); }   // notification: no body
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(reply));
+  } catch (e) {
+    log.error('mcp handler crashed -', e.stack || e.message);
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      jsonrpc: '2.0', id: (msg && msg.id) || null,
+      error: { code: -32603, message: 'internal error: ' + e.message },
+    }));
+  }
+});
+
+function startMcpListener() {
+  mcpServer.on('error', e => {
+    if (e.code === 'EADDRINUSE') {
+      log.warn('mcp port ' + cfg.MCP_PORT + ' already in use - not serving MCP over HTTP');
+      return;
+    }
+    log.error('mcp listener error:', e.message);
+  });
+  mcpServer.listen(cfg.MCP_PORT, cfg.MCP_HOST, () => {
+    const s = mcpSecret();
+    log.info('mcp listening on ' + cfg.MCP_HOST + ':' + cfg.MCP_PORT +
+             ' at /mcp/' + s.slice(0, 4) + '…' + s.slice(-4) +
+             ' (' + mcp.TOOLS.length + ' tools)');
+  });
 }
 
 if (require.main === module) main();

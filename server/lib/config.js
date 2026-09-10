@@ -13,6 +13,17 @@ const config = {
   PORT: parseInt(process.env.NOTABLES_PORT || '8787', 10),
   HOST: process.env.NOTABLES_HOST || '0.0.0.0',
   TOKEN_FILE: process.env.NOTABLES_TOKEN_FILE || path.join(HOME, '.notables', 'token'),
+
+  // --- the MCP listener -----------------------------------------------------
+  // A SECOND port, deliberately. The Cloudflare tunnel that already fronts this PC
+  // points one hostname at it, which puts it on the public internet - so it must never
+  // be the port that serves /api/*, where a DELETE can remove a lecture. This one
+  // serves exactly one route and the read/resync tools behind it. Its secret is its
+  // own, separate from the API token, and lives beside it.
+  MCP_PORT: parseInt(process.env.NOTABLES_MCP_PORT || '8788', 10),
+  MCP_HOST: process.env.NOTABLES_MCP_HOST || '0.0.0.0',
+  MCP_TOKEN_FILE: process.env.NOTABLES_MCP_TOKEN_FILE ||
+    path.join(HOME, '.notables', 'mcp-token'),
   CLAUDE_BIN: process.env.NOTABLES_CLAUDE_BIN ||
     path.join(HOME, 'AppData', 'Local', 'Microsoft', 'WinGet', 'Links', 'claude.exe'),
   // Model used for the note pass. Sonnet is fast and more than good enough for
