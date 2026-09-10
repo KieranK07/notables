@@ -236,6 +236,88 @@ async function collectRefs(courseId, report) {
   return { refs, links, modules: seen };
 }
 
+// ------------------------------------------------------- revisions / planning
+function destRelFor(vaultCourse, ref, meta) {
+  const name = safeFileName(meta.display_name || meta.filename, extract.extFor(meta.filename));
+  return rel(path.join(courseDir(vaultCourse), ref.module || '_Files', name));
+}
+
+/** Newest revision first: Canvas's updated_at, then the file id, which counts up. */
+function byRevisionDesc(a, b) {
+  const ta = Date.parse((a.meta && a.meta.updated_at) || '') || 0;
+  const tb = Date.parse((b.meta && b.meta.updated_at) || '') || 0;
+  if (ta !== tb) return tb - ta;
+  return (parseInt(b.fileId, 10) || 0) - (parseInt(a.fileId, 10) || 0);
+}
+
+/**
+ * Decide which Canvas file owns each destination path, before anything is downloaded.
+ *
+ * Canvas mints a NEW file id every time an instructor re-uploads a document, and the
+ * vault names files by display name - so three revisions of "Mod2.pdf" arrive as three
+ * refs resolving to one path. Each download overwrote the last and each left a manifest
+ * entry behind, so two of the three described bytes that were no longer on disk. It was
+ * self-sustaining, too: a stale entry's own updatedAt and size still matched Canvas and
+ * the file at its path still existed, so `unchanged` was true and the next sync never
+ * looked again.
+ *
+ * A re-upload is a revision, not a second document. The newest wins the path; older
+ * entries are dropped from the manifest whether or not Canvas still lists them; and the
+ * winner is re-downloaded, because the bytes sitting there are whichever revision
+ * happened to be written last, which is not the same question.
+ *
+ * Returns the refs actually worth syncing, in the original order.
+ */
+async function planRefs(courseId, refs, vaultCourse, manifest, report) {
+  const byPath = new Map();
+  const ordered = [];
+
+  for (const ref of refs.values()) {
+    ordered.push(ref);
+    if (!ref.meta) {
+      // syncFile would fetch this anyway; hoisting it costs no extra Canvas calls and
+      // is what makes the destination knowable before we commit to a download.
+      try { ref.meta = await fileMeta(courseId, ref.fileId, null); }
+      catch (e) {
+        if (e.code === 'CANVAS_AUTH') throw e;
+        continue;                       // leave it to syncFile to report the skip
+      }
+    }
+    if (!ref.meta || ref.meta.locked_for_user) continue;   // cannot own a path it can't fill
+    ref.destRel = destRelFor(vaultCourse, ref, ref.meta);
+    if (!byPath.has(ref.destRel)) byPath.set(ref.destRel, []);
+    byPath.get(ref.destRel).push(ref);
+  }
+
+  for (const [destRel, group] of byPath) {
+    group.sort(byRevisionDesc);
+    const winner = group[0];
+
+    // Older revisions simply are not synced. Once a path has been resolved that is the
+    // steady state on every future run, so it is silent - the run only reports a change
+    // it actually made.
+    for (const loser of group.slice(1)) loser.supersededBy = winner.fileId;
+
+    // Anything else still claiming this path is a leftover describing bytes that were
+    // overwritten. Removing one is the real change, and it is also the only thing that
+    // justifies re-fetching the winner: until it is gone, the file sitting at that path
+    // may be a loser's. Once the manifest is clean this finds nothing and the winner
+    // goes back to being 'unchanged'.
+    let removed = 0;
+    for (const [id, f] of Object.entries(manifest.files)) {
+      if (id === winner.fileId || !f.path || f.path !== destRel) continue;
+      delete manifest.files[id];
+      removed++;
+      report.superseded.push({
+        path: destRel, name: f.name || id, droppedId: id, keptId: winner.fileId,
+      });
+    }
+    if (removed) winner.forceDownload = true;
+  }
+
+  return ordered.filter(r => !r.supersededBy);
+}
+
 // ------------------------------------------------------------------- files
 async function fileMeta(courseId, fileId, cached) {
   if (cached) return cached;
@@ -266,7 +348,10 @@ async function syncFile(courseId, ref, vaultCourse, manifest, report) {
   const destAbs = path.join(courseDir(vaultCourse), ref.module || '_Files', name);
   const unchanged = prev && prev.updatedAt === meta.updated_at && prev.size === meta.size &&
     prev.path && fs.existsSync(path.join(cfg.VAULT, prev.path.split('/').join(path.sep)));
-  if (unchanged && !report.full) {
+  // `unchanged` asks whether Canvas still agrees with our record - it cannot tell whether
+  // the bytes at that path are OURS. When another revision of the same filename has been
+  // writing over this path, they are not, and planRefs sets forceDownload to settle it.
+  if (unchanged && !report.full && !ref.forceDownload) {
     // A file that produced no text is not "done" just because it is unchanged. When a
     // new extraction capability lands (OCR), revisit it once - from the copy already
     // in the vault, with no download.
@@ -469,7 +554,7 @@ async function syncCourse(course, opts) {
     course: vaultCourse, canvasCourseId: courseId, matchedBy: resolved.matchedBy,
     suggested: resolved.suggested || null,
     counts: { new: 0, updated: 0, unchanged: 0, skipped: 0 },
-    skipped: [], failed: [], errors: {}, full: !!opts.full,
+    skipped: [], failed: [], errors: {}, superseded: [], full: !!opts.full,
   };
 
   const manifest = readManifest(vaultCourse) || { version: 1, files: {} };
@@ -486,9 +571,17 @@ async function syncCourse(course, opts) {
   manifest.modules = modules;
   manifest.links = links;
 
+  // Resolve re-uploads to one file per path before downloading anything.
+  const plan = await planRefs(courseId, refs, vaultCourse, manifest, report);
+  if (report.superseded.length) {
+    log.info('canvas:', vaultCourse, '-', report.superseded.length,
+      'superseded revision(s) dropped:',
+      report.superseded.map(r => r.name + ' #' + r.droppedId).join(', '));
+  }
+
   let done = 0;
-  for (const ref of refs.values()) {
-    progress({ phase: 'files', course: vaultCourse, done, total: refs.size, item: ref.itemTitle });
+  for (const ref of plan) {
+    progress({ phase: 'files', course: vaultCourse, done, total: plan.length, item: ref.itemTitle });
     const outcome = await syncFile(courseId, ref, vaultCourse, manifest, report);
     report.counts[outcome] = (report.counts[outcome] || 0) + 1;
     done++;
@@ -511,7 +604,8 @@ async function syncCourse(course, opts) {
 
   manifest.syncedAt = nowIso();
   manifest.lastRun = { at: manifest.syncedAt, counts: report.counts,
-                       failed: report.failed, skipped: report.skipped, errors: report.errors };
+                       failed: report.failed, skipped: report.skipped,
+                       superseded: report.superseded, errors: report.errors };
   writeManifest(vaultCourse, manifest);
   report.indexPath = writeCourseIndex(vaultCourse, manifest);
 
@@ -716,6 +810,7 @@ function summarise(r) {
       counts: c.counts, matchedBy: c.matchedBy, suggested: c.suggested,
       assignments: c.assignments || 0, upcoming: c.upcoming || 0,
       problems: (c.failed || []).length,
+      superseded: (c.superseded || []).length,
     })),
   };
 }

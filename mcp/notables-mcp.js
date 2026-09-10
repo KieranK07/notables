@@ -329,15 +329,22 @@ function formatSyncReport(status) {
     }
     out.push('');
     let quiet = 0;
+    let cleaned = 0;
     for (const c of last.courses || []) {
       const k = c.counts || {};
       const changed = (k.new || 0) + (k.updated || 0);
-      if (!changed && !c.problems) { quiet++; continue; }
+      cleaned += c.superseded || 0;
+      if (!changed && !c.problems && !c.superseded) { quiet++; continue; }
       out.push('- ' + c.course + ': ' +
                (k.new || 0) + ' new, ' + (k.updated || 0) + ' updated, ' +
                (k.unchanged || 0) + ' unchanged' +
                (k.skipped ? ', ' + k.skipped + ' skipped' : '') +
+               (c.superseded ? ', ' + c.superseded + ' superseded revision(s) cleaned up' : '') +
                (c.problems ? ' - ' + c.problems + ' problem(s)' : ''));
+    }
+    if (cleaned) {
+      out.push('  (a superseded revision is an older Canvas upload of the same filename ' +
+               'whose bytes had already been overwritten - the manifest entry is now gone too)');
     }
     if (quiet) out.push('- ' + quiet + ' other class(es) unchanged.');
     for (const f of last.failedCourses || []) {

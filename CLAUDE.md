@@ -135,6 +135,21 @@ independently-built components; do not change it unilaterally.
   for `''`, only for whitespace. Test the sentinel (`r === null`), never truthiness, when
   the sentinel and a legitimate empty value are both falsy.
 
+- **Canvas mints a NEW file id on every re-upload, and it was silently corrupting the
+  vault.** The sync names files by display name, so three revisions of `Mod2.pdf` resolved
+  to one path: each download overwrote the last and each left its own manifest entry, so
+  two of the three described bytes that were no longer on disk (41,368 / 44,824 / 44,834
+  chars, one file). It was self-sustaining — a stale entry's `updatedAt` and `size` still
+  matched Canvas and the file at its path still existed, so `unchanged` was true and no
+  later sync ever looked again. `planRefs` now resolves ownership of every destination
+  path *before* downloading: newest `updated_at` wins, older manifest entries are dropped
+  whether or not Canvas still lists them, and the winner is re-downloaded, because
+  "Canvas still agrees with our record" and "the bytes there are ours" are different
+  questions. Two rules keep it honest: only an actual manifest deletion forces a
+  re-download, so a resolved path is silent on every later run; and losers are skipped,
+  never reported, so the steady state produces no noise. Verified by injecting a stale
+  entry and watching a sync repair it.
+
 - **`URLSession.AsyncBytes.lines` drops empty lines**, and the blank line is what terminates
   an SSE event — so SSE parsed with `.lines` never dispatches. Parse the raw bytes.
 - **`wmic` is gone** on this Windows build; use `powershell -NoProfile -Command`.
