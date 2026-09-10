@@ -101,6 +101,29 @@ confirmation and the Mac app shows the classified result over SSE moments later.
   "todos":[{ "id","text","due","course","done","source" }] }
 ```
 
+### `GET /api/search?q=&course=&kind=&limit=&regex=` — full text across the vault
+```jsonc
+{ "ok":true, "query":"relational algebra", "scanned":93, "matched":14, "truncated":false,
+  "results":[{ "ref":"material:DB & Information Processing Systems/1851757",
+               "kind":"material", "course":"…", "title":"CSCSFE261Fall2026Mod2.pdf",
+               "module":"02 Course Content", "chars":44834, "hits":57,
+               "snippets":["…Module #2 Relational Algebra Dates: 7 and 9 Septe…"],
+               "supersedes":["material:…/1843314"] }] }
+```
+`kind` is a comma-separated subset of `material,note,transcript` (default: all three).
+Runs on the PC because that is where the files are — the link is a DERP relay, so
+snippets cross it, never corpora. Results are **deduplicated by path**: a Canvas file
+re-uploaded under the same name has several ids pointing at one file on disk, and only
+the newest is really there. The superseded refs are reported, not hidden.
+
+### `GET /api/documents?course=&kind=&name=&module=&limit=` — browse refs, no text
+### `GET /api/document?ref=` — the full text behind any ref
+Refs are `material:<course>/<canvasFileId>`, `note:<noteId>` or `transcript:<noteId>`.
+
+### `GET /api/vault/status` — what is on disk and what looks wrong with it
+Per-course counts, `lastSync`, and `needsAttention: { extractFailures, pathCollisions }`.
+This is the "does anything need resyncing?" answer.
+
 ### `GET /api/note/{id}` → `{ …meta, "markdown":"…", "transcript":"…" }`
 ### `PATCH /api/note/{id}` — rename a note
 ```jsonc

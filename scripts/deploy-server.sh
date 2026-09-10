@@ -53,6 +53,15 @@ if [ -f "$STAGE/README.md" ]; then scp -q "$STAGE/README.md" "$HOST:$REMOTE_DIR_
 scp -q "$STAGE"/lib/*.js "$HOST:$REMOTE_DIR_FWD/lib/"
 scp -q "$STAGE"/python/*.py "$HOST:$REMOTE_DIR_FWD/python/"
 
+# The MCP server rides along so a Claude instance ON the PC gets the same tools as one
+# on the Mac. It is a client of the HTTP API like any other, so it is not part of the
+# server proper - it just has to exist on both machines.
+if [ -d "$REPO/mcp" ]; then
+  echo "==> copying mcp/ -> $HOST:C:\\Users\\Kieran\\Notables\\mcp"
+  ssh "$HOST" 'if not exist "C:\Users\Kieran\Notables\mcp" mkdir "C:\Users\Kieran\Notables\mcp"'
+  scp -q "$REPO"/mcp/* "$HOST:C:/Users/Kieran/Notables/mcp/"
+fi
+
 if [ "$INSTALL" = 1 ]; then
   echo "==> installing the scheduled task + firewall rule"
   scp -q "$REPO/scripts/install-service.ps1" "$HOST:C:/Users/Kieran/notables-install-service.ps1"

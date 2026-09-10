@@ -18,6 +18,7 @@ const sse = require('./lib/sse');
 const claude = require('./lib/claude');
 const whisper = require('./lib/whisper');
 const pipeline = require('./lib/pipeline');
+const search = require('./lib/search');
 const canvas = require('./lib/canvas');
 const materials = require('./lib/materials');
 const chat = require('./lib/chat');
@@ -506,6 +507,91 @@ function handleTodoDone(req, res, id, done) {
 }
 
 /**
+ * GET /api/search?q=&course=&kind=&limit=&regex=1 - full text across the vault.
+ *
+ * Runs here rather than on the caller because this is where the files are; see
+ * lib/search.js. Returns snippets and refs, never whole documents.
+ */
+function handleSearch(req, res, url) {
+  let out;
+  try {
+    out = search.search({
+      q: url.searchParams.get('q'),
+      course: url.searchParams.get('course'),
+      kind: url.searchParams.get('kind'),
+      limit: url.searchParams.get('limit'),
+      regex: /^(1|true)$/i.test(util.asString(url.searchParams.get('regex'))),
+    });
+  } catch (e) {
+    return fail(res, 400, e.message);
+  }
+  log.info('search', JSON.stringify(out.query), '-', out.matched, 'of', out.scanned, 'file(s)');
+  send(res, 200, Object.assign({ ok: true }, out), CORS);
+}
+
+/**
+ * GET /api/vault/status - what is on disk and what looks wrong with it.
+ *
+ * This is the "does anything need resyncing?" answer: per-course counts, files whose
+ * text never extracted, and manifest entries that collide on one path (a Canvas
+ * re-upload gets a new id but the same display name, so the newer revision overwrites
+ * the older and two entries end up describing a file that is no longer there).
+ */
+function handleVaultStatus(req, res) {
+  const collisions = search.collisions();
+  const problems = search.extractProblems();
+  const courses = [];
+  for (const c of store.courseSummaries(true)) {
+    const m = materials.readManifest(c.name);
+    const files = (m && m.files) ? Object.values(m.files) : [];
+    courses.push({
+      course: c.name,
+      canvasCourseId: (m && m.canvasCourseId) || null,
+      courseCode: (m && m.courseCode) || null,
+      noteCount: c.noteCount || 0,
+      lastClass: c.lastClass || null,
+      fileEntries: files.length,
+      distinctFiles: new Set(files.map(f => f.path).filter(Boolean)).size,
+      textChars: files.reduce((n, f) => n + ((f.extract && f.extract.chars) || 0), 0),
+      modules: (m && m.modules || []).map(x => x.folder || x.name),
+      syncedAt: (m && m.syncedAt) || null,
+    });
+  }
+  send(res, 200, {
+    ok: true,
+    canvas: canvas.status(),
+    syncing: materials.isSyncing(),
+    lastSync: materials.last(),
+    courses,
+    needsAttention: {
+      extractFailures: problems,
+      pathCollisions: collisions,
+    },
+  }, CORS);
+}
+
+/** GET /api/documents?course=&kind=&name=&module=&limit= - browse refs without text. */
+function handleDocuments(req, res, url) {
+  const out = search.list({
+    course: url.searchParams.get('course'),
+    kind: url.searchParams.get('kind'),
+    name: url.searchParams.get('name'),
+    module: url.searchParams.get('module'),
+    limit: url.searchParams.get('limit'),
+  });
+  send(res, 200, Object.assign({ ok: true }, out), CORS);
+}
+
+/** GET /api/document?ref=<kind:id> - the full text behind any search result. */
+function handleDocument(req, res, url) {
+  const ref = util.asString(url.searchParams.get('ref')).trim();
+  if (!ref) return fail(res, 400, 'a ref is required');
+  const r = search.readRef(ref);
+  if (r.error) return fail(res, 404, r.error);
+  send(res, 200, { ok: true, ref, meta: r.meta, chars: r.text.length, text: r.text }, CORS);
+}
+
+/**
  * PATCH /api/note/{id} - rename a note.
  *
  * Only the student's typed title. The course, topic, section and dates are Claude's
@@ -925,6 +1011,10 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/canvas/disconnect' && method === 'POST') return handleCanvasDisconnect(req, res);
     if (p === '/api/canvas/probe' && method === 'GET') return await handleCanvasProbe(req, res);
     if (p === '/api/canvas/sync' && method === 'POST') return await handleCanvasSync(req, res);
+    if (p === '/api/search' && method === 'GET') return handleSearch(req, res, url);
+    if (p === '/api/documents' && method === 'GET') return handleDocuments(req, res, url);
+    if (p === '/api/document' && method === 'GET') return handleDocument(req, res, url);
+    if (p === '/api/vault/status' && method === 'GET') return handleVaultStatus(req, res);
     if (p === '/api/materials' && method === 'GET') return handleMaterials(req, res, url);
     if (p === '/api/material' && method === 'GET') return handleMaterialText(req, res, url);
     if (p === '/api/material/file' && (method === 'GET' || method === 'HEAD')) return handleMaterialFile(req, res, url);
