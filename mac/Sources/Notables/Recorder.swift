@@ -51,6 +51,8 @@ final class Recorder: ObservableObject {
     private static let silenceFloor: Float = 1e-4
     /// How long a dead input has to stay dead before the UI shouts about it.
     static let silenceWarningAfter: TimeInterval = 12
+    /// How long the on-device analyzer gets to flush before we stop waiting on it.
+    private static let flushTimeout: TimeInterval = 12
 
     private let engine = AVAudioEngine()
     private var tap: TapState?
@@ -222,21 +224,38 @@ final class Recorder: ObservableObject {
         state = .finishing
         ticker?.invalidate(); ticker = nil
         if let o = configObserver { NotificationCenter.default.removeObserver(o); configObserver = nil }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
 
-        // Let queued writes drain before we close the file.
+        // ORDER MATTERS, and it is ordered by what is irreplaceable.
+        //
+        // The m4a is the lecture. The live transcript is a preview the PC re-does from
+        // that same audio. So the file is closed FIRST, before anything that can block:
+        // `engine.stop()` is synchronous and waits on the audio thread, and the analyzer
+        // flush below can wait on a model. A 79-minute class was lost to exactly this -
+        // the app was killed while stopping, and the recording was still an unfinalised
+        // container holding 29 MB of AAC with no index to it.
+        engine.inputNode.removeTap(onBus: 0)
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            writeQueue.async { c.resume() }
+            writeQueue.async { c.resume() }            // let queued writes drain
         }
         // Releases the AVAudioFile here, on the main actor, so the container is finalised
         // before the caller stats the file. Waiting on the engine to release its tap
         // closure would race that check and report a good recording as empty.
         tap?.invalidate(); tap = nil
 
+        teardownEngine()
+
+        // The analyzer flush is best-effort and time-boxed. `finalizeAndFinishThroughEndOfInput`
+        // then awaiting the results task can hang - the stream simply never ends - and an
+        // hour of audio is not worth risking on a preview that is about to be thrown away.
         var transcript = transcriptSoFar
         if #available(macOS 26.0, *), let live = transcriber as? LiveTranscriber {
-            transcript = await live.finish()
+            if let flushed = await withTimeout(seconds: Self.flushTimeout, { await live.finish() }) {
+                transcript = flushed
+            } else {
+                error = "The live transcriber didn't finish in time — the recording is saved " +
+                        "and the PC will transcribe it properly."
+                Task { await live.cancel() }           // let it unwind on its own time
+            }
         }
         finalText = transcript
         volatileText = ""
@@ -248,13 +267,51 @@ final class Recorder: ObservableObject {
         return (recordingURL, transcript, duration)
     }
 
+    /// Stop the engine and hand the microphone back.
+    ///
+    /// `engine.stop()` alone leaves the input node initialised, which keeps the device
+    /// open and the orange microphone indicator lit long after a recording has ended.
+    /// Resetting and deallocating the input unit's render resources is what actually
+    /// releases it.
+    private func teardownEngine() {
+        engine.stop()
+        engine.reset()
+        engine.inputNode.auAudioUnit.deallocateRenderResources()
+    }
+
+    /// Run `work`, giving up after `seconds`. Returns nil on timeout, leaving the original
+    /// task to finish or hang on its own without holding anyone up.
+    private func withTimeout<T: Sendable>(seconds: TimeInterval,
+                                          _ work: @escaping @Sendable () async -> T) async -> T? {
+        await withTaskGroup(of: T?.self) { group in
+            group.addTask { await work() }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(seconds))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
+    /// Forget the last recording's text so the panel does not open showing it. Called once
+    /// the note is safely queued - not in stop(), whose return value is that text.
+    func clearTranscript() {
+        finalText = ""
+        volatileText = ""
+        levels = []
+        level = 0
+        elapsed = 0
+    }
+
     func cancel() async {
         guard state != .idle else { return }
         ticker?.invalidate(); ticker = nil
         if let o = configObserver { NotificationCenter.default.removeObserver(o); configObserver = nil }
         engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
         tap?.invalidate(); tap = nil
+        teardownEngine()
         if #available(macOS 26.0, *), let live = transcriber as? LiveTranscriber { await live.cancel() }
         transcriber = nil
         analyzerFormat = nil

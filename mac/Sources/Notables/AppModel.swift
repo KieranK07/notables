@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AVFoundation      // AVAudioFile, to read a recovered recording's true duration
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -100,7 +101,10 @@ final class AppModel: ObservableObject {
         outboxTask = Task { await self.drainOutboxLoop() }
         Task { await refresh() }
         Task { await self.warmUpSpeechModel() }
-        Task { await self.reconcileLocalAudio() }
+        Task {
+            await self.recoverOrphanRecordings()
+            await self.reconcileLocalAudio()
+        }
         reconcileTask = Task { await self.reconcileLoop() }
 
         // Coming back to the app is the other moment worth re-checking: if the event
@@ -353,6 +357,9 @@ final class AppModel: ObservableObject {
         Outbox.save(payload)
         pendingUploads = Outbox.pending().count
         recordingTitle = ""
+        // The panel keeps `finalText` so stop() can return it; clear it now that the note
+        // is queued, or the next recording opens showing the last class's transcript.
+        recorder.clearTranscript()
         if capturedNothing {
             banner = "That recording is completely silent — \(inputName) captured nothing. "
                    + "Check System Settings › Sound › Input before the next class."
@@ -417,6 +424,56 @@ final class AppModel: ObservableObject {
     /// upload, and — the one that actually matters — anything the *server* has not
     /// explicitly cleared. `safeToDelete` is never inferred locally, and an unreachable
     /// PC means "keep it", because `audioStatus` throwing is not consent.
+    /// File any recording on this Mac that never made it into the outbox.
+    ///
+    /// `stopRecordingAndSend` writes the outbox entry only after `recorder.stop()` returns.
+    /// If the app dies in that window - it was killed mid-stop once, taking a 79-minute
+    /// class with it - the audio is sitting right there and nothing will ever look at it
+    /// again. So on launch, a recording with no outbox entry and no note on the PC gets
+    /// one rebuilt from the file itself. Recordings that were cancelled are already
+    /// deleted from disk, so there is nothing here to resurrect against the user's wishes.
+    func recoverOrphanRecordings() async {
+        for rec in LocalRecordings.all() {
+            guard rec.id != currentRecordingID else { continue }
+            guard !Outbox.pending().contains(where: { $0.id == rec.id }) else { continue }
+            guard rec.bytes > 0 else { continue }
+            // Does the PC already know about it? Anything but a clean "no" is left alone.
+            if let status = try? await client.audioStatus(id: rec.id), status.received > 0 { continue }
+            if notes.contains(where: { $0.id == rec.id }) { continue }
+
+            // A file the system cannot open is not a recording the PC can transcribe - it
+            // is one that needs repairing. Say so rather than pushing 29 MB of unusable
+            // AAC over a 1.6 MB/s relay to produce a failed note at the other end.
+            guard let audio = try? AVAudioFile(forReading: rec.url) else {
+                banner = "A recording on this Mac is damaged and can't be filed " +
+                         "(\(rec.id.prefix(8))). The audio is still in " +
+                         "~/Documents/Notables/Recordings."
+                continue
+            }
+            let attrs = try? FileManager.default.attributesOfItem(atPath: rec.url.path)
+            let recordedAt = (attrs?[.creationDate] as? Date) ?? Date()
+            let duration = audio.processingFormat.sampleRate > 0
+                ? Double(audio.length) / audio.processingFormat.sampleRate : 0
+
+            let payload = NotesClient.IngestPayload(
+                id: rec.id,
+                title: "Recovered class \(DateFormatter.friendly.string(from: recordedAt))",
+                recordedAt: ISO8601.string(recordedAt),
+                durationSec: duration,
+                locale: Locale.current.identifier,
+                device: Host.current().localizedName ?? "mac",
+                audioBytes: rec.bytes,
+                audioFormat: "m4a",
+                draftTranscript: "",
+                localAudioPath: rec.url.path
+            )
+            Outbox.save(payload)
+            banner = "Found a recording that was never filed — uploading it now."
+        }
+        pendingUploads = Outbox.pending().count
+        if pendingUploads > 0 { await drainOutbox() }
+    }
+
     private func canRelease(_ rec: LocalRecordings.Item) async -> Bool {
         if rec.id == currentRecordingID { return false }
         if Outbox.pending().contains(where: { $0.id == rec.id }) { return false }

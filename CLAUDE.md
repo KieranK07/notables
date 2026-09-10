@@ -150,6 +150,35 @@ independently-built components; do not change it unilaterally.
   never reported, so the steady state produces no noise. Verified by injecting a stale
   entry and watching a sync repair it.
 
+- **Close the audio file before anything that can block.** A 79-minute class was lost
+  because `stop()` did `engine.stop()` and the analyzer flush *before* releasing the
+  `AVAudioFile`. `engine.stop()` is synchronous and waits on the audio thread;
+  `LiveTranscriber.finish()` calls `finalizeAndFinishThroughEndOfInput()` and then awaits
+  the results task, which can simply never end. The app was killed while stuck there, and
+  the recording on disk was a 29 MB **unfinalised container** — `ftyp` and raw AAC, no
+  `moov`, no `mdat` header, so nothing can index it and no decoder will touch it. The m4a
+  is the lecture; the live transcript is a preview the PC redoes from that same audio. So
+  the order is now: remove tap → drain the write queue → `tap.invalidate()` (which closes
+  the file) → tear the engine down → flush the analyzer **behind a 12 s timeout**, falling
+  back to `transcriptSoFar`.
+
+- **`engine.stop()` does not hand the microphone back.** The input node stays initialised,
+  so the orange mic indicator stays lit after recording ends. `teardownEngine()` follows it
+  with `engine.reset()` and `inputNode.auAudioUnit.deallocateRenderResources()`.
+
+- **A recording is not safe until the outbox entry exists.** `stopRecordingAndSend` writes
+  that entry only after `stop()` returns, so anything that kills the app in between leaves
+  audio on disk that nothing will ever look at again. `recoverOrphanRecordings()` now runs
+  at launch: a recording with no outbox entry and no bytes on the PC gets an entry rebuilt
+  from the file. It **skips files `AVAudioFile` cannot open** and says so — a damaged
+  recording needs repairing, not a 29 MB upload over a 1.6 MB/s relay to produce a failed
+  note at the far end. Cancelled recordings are already deleted from disk, so nothing is
+  resurrected against the user's wishes.
+
+- **`finalText` outlives the recording it belongs to.** `stop()` returns it, so it cannot
+  be cleared there — and the panel therefore reopened showing the *previous* class's
+  transcript. `AppModel` calls `recorder.clearTranscript()` once the note is queued.
+
 - **`URLSession.AsyncBytes.lines` drops empty lines**, and the blank line is what terminates
   an SSE event — so SSE parsed with `.lines` never dispatches. Parse the raw bytes.
 - **`wmic` is gone** on this Windows build; use `powershell -NoProfile -Command`.
