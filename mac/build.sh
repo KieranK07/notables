@@ -1,7 +1,33 @@
 #!/bin/bash
 # Builds Notables.app. No Xcode project — just swiftc plus a hand-assembled bundle.
+#
+#   ./build.sh            needs NOTABLES_PC_HOST (environment or ../notables.local)
+#   ./build.sh --local    points the app at localhost instead
 set -euo pipefail
+LOCAL=0
+for a in "$@"; do
+  case "$a" in
+    --local) LOCAL=1 ;;
+    -h|--help) sed -n '2,5p' "$0"; exit 0 ;;
+    *) echo "unknown option: $a" >&2; exit 2 ;;
+  esac
+done
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+# The PC's tailnet address stays out of git. It comes from the environment or the
+# gitignored notables.local at the repo root (NOTABLES_PC_HOST=<ip or MagicDNS name>),
+# and is baked into a generated Swift file plus an ATS exception for plain HTTP.
+[ -f "$ROOT/../notables.local" ] && . "$ROOT/../notables.local"
+if [ "$LOCAL" = 1 ]; then
+  PC_HOST=localhost
+elif [ -n "${NOTABLES_PC_HOST:-}" ]; then
+  PC_HOST="$NOTABLES_PC_HOST"
+else
+  echo "✗ NOTABLES_PC_HOST is unset. Put NOTABLES_PC_HOST=<pc-ip> in notables.local at the" >&2
+  echo "  repo root, or run ./build.sh --local to build against localhost." >&2
+  exit 1
+fi
+
 # Build OUTSIDE the repo. The repo lives under Desktop, which is file-provider
 # synced, and the provider re-stamps com.apple.FinderInfo onto the bundle in the
 # window between `xattr -cr` and `codesign --verify` — so signing here can never be
@@ -15,12 +41,6 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 
-# The PC's tailnet address stays out of git. It comes from the environment or the
-# gitignored notables.local at the repo root (NOTABLES_PC_HOST=<ip or MagicDNS name>),
-# and is baked into a generated Swift file plus an ATS exception for plain HTTP.
-[ -f "$ROOT/../notables.local" ] && . "$ROOT/../notables.local"
-PC_HOST="${NOTABLES_PC_HOST:-localhost}"
-[ -n "${NOTABLES_PC_HOST:-}" ] || echo "  warning: NOTABLES_PC_HOST unset, defaulting to localhost (see notables.local)"
 printf 'enum BuildConfig {\n    static let serverHost = "%s"\n}\n' "$PC_HOST" > "$BUILD_ROOT/BuildConfig.swift"
 PB=/usr/libexec/PlistBuddy
 PL="$APP/Contents/Info.plist"
