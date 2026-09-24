@@ -15,7 +15,8 @@
 //
 // Config:
 //   NOTABLES_MCP_URL     full endpoint URL, overrides everything below
-//   NOTABLES_MCP_HOST    default http://100.69.103.126:8788  (the PC over Tailscale)
+//   NOTABLES_MCP_HOST    default http://<NOTABLES_PC_HOST>:8788, where NOTABLES_PC_HOST
+//                        comes from the environment or the gitignored notables.local
 //   NOTABLES_MCP_TOKEN   the secret; otherwise read from ~/.notables/mcp-token
 const fs = require('fs');
 const os = require('os');
@@ -24,7 +25,19 @@ const http = require('http');
 const https = require('https');
 const { URL } = require('url');
 
-const DEFAULT_HOST = process.env.NOTABLES_MCP_HOST || 'http://100.69.103.126:8788';
+// The PC's tailnet address is kept out of git: read it from the gitignored
+// notables.local at the repo root (shell-style KEY=value lines).
+function localSetting(key) {
+  if (process.env[key]) return process.env[key];
+  try {
+    const text = fs.readFileSync(path.join(__dirname, '..', 'notables.local'), 'utf8');
+    const m = text.match(new RegExp('^\\s*' + key + '\\s*=\\s*["\']?([^"\'\\s#]+)', 'm'));
+    return m ? m[1] : null;
+  } catch (e) { return null; }
+}
+
+const DEFAULT_HOST = process.env.NOTABLES_MCP_HOST ||
+  'http://' + (localSetting('NOTABLES_PC_HOST') || '127.0.0.1') + ':8788';
 
 function endpoint() {
   if (process.env.NOTABLES_MCP_URL) return process.env.NOTABLES_MCP_URL;

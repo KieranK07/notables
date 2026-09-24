@@ -29,6 +29,12 @@ _courses.json
 *.mov
 *.whisper
 
+# --- Machine-local config ----------------------------------------------------
+# Tailnet addresses and hostnames stay out of git. notables.local holds
+# NOTABLES_PC_HOST=<ip or MagicDNS name>; build.sh, deploy-server.sh and the MCP
+# bridge read it.
+notables.local
+
 # --- Credentials -------------------------------------------------------------
 # The shared bearer token and the Canvas session cookie live in ~/.notables/,
 # outside the repo. These patterns are belt and braces.

@@ -16,7 +16,10 @@ REMOTE_DIR='C:\Users\Kieran\Notables\server'
 REMOTE_DIR_FWD='C:/Users/Kieran/Notables/server'
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$REPO/server"
-HEALTH_URL="http://100.69.103.126:8787/api/health"
+# The PC's tailnet address lives in the gitignored notables.local at the repo root
+# (NOTABLES_PC_HOST=<ip or MagicDNS name>), so it never lands in git.
+[ -f "$REPO/notables.local" ] && . "$REPO/notables.local"
+HEALTH_URL="http://${NOTABLES_PC_HOST:-$HOST}:8787/api/health"
 
 INSTALL=0; RESTART=1
 for a in "$@"; do

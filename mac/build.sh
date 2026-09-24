@@ -14,6 +14,19 @@ SDK="$(xcrun --sdk macosx --show-sdk-path)"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+
+# The PC's tailnet address stays out of git. It comes from the environment or the
+# gitignored notables.local at the repo root (NOTABLES_PC_HOST=<ip or MagicDNS name>),
+# and is baked into a generated Swift file plus an ATS exception for plain HTTP.
+[ -f "$ROOT/../notables.local" ] && . "$ROOT/../notables.local"
+PC_HOST="${NOTABLES_PC_HOST:-localhost}"
+[ -n "${NOTABLES_PC_HOST:-}" ] || echo "  warning: NOTABLES_PC_HOST unset, defaulting to localhost (see notables.local)"
+printf 'enum BuildConfig {\n    static let serverHost = "%s"\n}\n' "$PC_HOST" > "$BUILD_ROOT/BuildConfig.swift"
+PB=/usr/libexec/PlistBuddy
+PL="$APP/Contents/Info.plist"
+$PB -c "Add :NSAppTransportSecurity:NSExceptionDomains dict" "$PL"
+$PB -c "Add :NSAppTransportSecurity:NSExceptionDomains:$PC_HOST dict" "$PL"
+$PB -c "Add :NSAppTransportSecurity:NSExceptionDomains:$PC_HOST:NSExceptionAllowsInsecureHTTPLoads bool true" "$PL"
 [ -f "$ROOT/Resources/AppIcon.icns" ] && cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/"
 
 echo "› compiling"
@@ -24,7 +37,7 @@ swiftc \
   -sdk "$SDK" \
   -target arm64-apple-macos26.0 \
   -framework SwiftUI -framework AppKit -framework AVFoundation -framework Speech -framework WebKit -framework PDFKit -framework Quartz -framework QuickLookUI \
-  $(find "$ROOT/Sources" -name '*.swift') \
+  $(find "$ROOT/Sources" -name '*.swift') "$BUILD_ROOT/BuildConfig.swift" \
   -o "$APP/Contents/MacOS/Notables"
 
 echo "› signing (with entitlements)"

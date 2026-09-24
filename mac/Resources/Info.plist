@@ -19,11 +19,7 @@
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key>   <true/>
-        <key>NSExceptionDomains</key>
-        <dict>
-            <key>100.69.103.126</key>
-            <dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
-        </dict>
+        <!-- build.sh adds an NSExceptionDomains entry for NOTABLES_PC_HOST -->
     </dict>
 </dict>
 </plist>
