@@ -54,7 +54,7 @@ drifted description is a tool the model calls wrongly.
 `mcp/notables-mcp.js` is therefore a bridge and nothing else: newline-delimited JSON-RPC in
 on stdin, POSTed to the same endpoint, reply out on stdout. It reads the secret from
 `~/.notables/mcp-token` (override with `NOTABLES_MCP_TOKEN`, or give the whole URL as
-`NOTABLES_MCP_URL`) and defaults to `http://100.69.103.126:8788` — set
+`NOTABLES_MCP_URL`) and defaults to `http://$NOTABLES_PC_HOST:8788` (from the gitignored `notables.local`) — set
 `NOTABLES_MCP_HOST=http://127.0.0.1:8788` on the PC itself.
 
 **Zero npm dependencies**, matching the rule the rest of the project is built on. MCP over

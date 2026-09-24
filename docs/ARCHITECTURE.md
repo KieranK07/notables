@@ -5,7 +5,7 @@ joined by Tailscale. All LLM work runs on Kieran's **Claude subscription** via t
 `claude` CLI in headless mode (`claude -p`). **No Anthropic API key, anywhere.**
 
 ```
-┌─ MacBook Air (kierans-macbook-air, 100.98.99.110) ──────────────┐
+┌─ MacBook Air ────────────────────────────────────────────────────┐
 │                                                                  │
 │  Notables.app  (SwiftUI, macOS 26)                              │
 │   ├─ Record     AVAudioEngine ──► AAC 64kbps mono 16kHz .m4a    │
@@ -18,7 +18,7 @@ joined by Tailscale. All LLM work runs on Kieran's **Claude subscription** via t
                            │ POST /api/ingest  + PUT /api/audio/{id}
                            │ GET  /api/events   (SSE, held open)
                            ▼        Tailscale
-┌─ Windows PC (desktop-kd53etc, 100.69.103.126) ──────────────────┐
+┌─ Windows PC ─────────────────────────────────────────────────────┐
 │  note-server (Node, zero npm dependencies)                       │
 │   ├─ whisper large-v3 on the RTX 3060 Ti  ◄── the real transcript │
 │   │    biased with a per-course glossary (initial_prompt)        │

@@ -132,6 +132,10 @@ the same value to `~/.notables/token` on the Mac and `%USERPROFILE%\.notables\to
 PC. The server re-reads it every ten seconds, so rotating it needs no restart. The firewall
 rule only admits `100.64.0.0/10`, so the port is reachable from the tailnet and nowhere else.
 
+The PC's tailnet address goes in `notables.local` at the repo root
+(`NOTABLES_PC_HOST=<pc-ip>`). It is gitignored; `build.sh`, `deploy-server.sh` and the MCP
+bridge read it.
+
 First launch asks for microphone access. Transcription is on-device — nothing goes to Apple.
 
 ## Using it
@@ -160,7 +164,7 @@ reads it, `grep` reads it, and it outlives this project.
 ## Troubleshooting
 
 **"PC offline" in the sidebar** — the PC is asleep or off the tailnet. Check `tailscale
-status`, then `curl http://100.69.103.126:8787/api/health`. Recordings keep queuing locally; the footer shows
+status`, then `curl http://<pc-ip>:8787/api/health`. Recordings keep queuing locally; the footer shows
 how many are waiting.
 
 **Nothing transcribed** — wrong input device. The recorder shows a live level meter; if it
@@ -180,9 +184,9 @@ realtime and the Claude pass 56 s.
 
 What it is not:
 
-- **Not portable as-is.** Tailnet addresses, `C:\Users\Kieran\...` paths and one Canvas host
-  are baked into the defaults. Everything is env-overridable, but it has never run on
-  anyone else's hardware.
+- **Not portable as-is.** `C:\Users\Kieran\...` paths and one Canvas host are baked into
+  the defaults. Everything is env-overridable, but it has never run on anyone else's
+  hardware.
 - **Single user, single shared secret.** One bearer token over plain HTTP, with Tailscale
   doing the encryption. Fine for three of my own devices; not an auth model.
 - **No tests, no CI.** Verification has been running it against the live server and reading

@@ -12,7 +12,7 @@ Action Button (hold)
          └─ banner: Captured / NOT captured
                      │
                      ▼
-        note-server on the PC (100.69.103.126:8787)
+        note-server on the PC (<pc-ip>:8787)
          ├─ writes inbox/<id>.json immediately  ← never lost
          ├─ claude -p decides todo | homework | note, course, due date
          ├─ appends Captures/<YYYY-MM>.md, registers the todo
@@ -38,7 +38,7 @@ sends the raw sentence and gets out of the way.
 ## The request
 
 ```
-POST http://100.69.103.126:8787/api/capture
+POST http://<pc-ip>:8787/api/capture
 Authorization: Bearer <token from ~/.notables/token>
 Content-Type: application/json      (set automatically by Shortcuts)
 
@@ -68,7 +68,7 @@ Run from the Mac on 2026-09-04 against the live server — byte-for-byte the req
 shortcut sends:
 
 ```console
-$ curl -s -i -X POST http://100.69.103.126:8787/api/capture \
+$ curl -s -i -X POST http://<pc-ip>:8787/api/capture \
     -H "Authorization: Bearer $(cat ~/.notables/token)" \
     -H "Content-Type: application/json" \
     -d '{"text":"chem homework problems 12 to 20 due friday","kind":"auto",
@@ -132,12 +132,12 @@ works fine, treat it as the token case below.) In order:
 1. **Tailscale off.** Open Tailscale on the phone, confirm the VPN toggle is on and it shows
    connected. This is the usual answer, especially after a reboot or a flight.
 2. **PC asleep.** The server only exists while the PC is awake. Wake it. Then, from Safari
-   on the phone, `http://100.69.103.126:8787/api/health` should return
+   on the phone, `http://<pc-ip>:8787/api/health` should return
    `{"ok":true,...}` — if Safari can't reach it, the shortcut can't either.
 3. **Server not running.** Health returns nothing but the PC is up → the `note-server`
    process isn't running. Start it on the PC.
 4. **Denied network permission.** If you tapped *Don't Allow* on the first run's
-   "wants to send data to 100.69.103.126" prompt, delete and re-add the
+   "wants to send data to <pc-ip>" prompt, delete and re-add the
    `Get Contents of URL` action, or reset Shortcuts' permissions, and answer *Allow*.
 
 **Banner says `NOT captured — {"ok":false,"error":"unauthorized"}`.**

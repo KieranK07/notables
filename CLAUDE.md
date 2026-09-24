@@ -35,9 +35,10 @@ independently-built components; do not change it unilaterally.
 - PC: `ssh pc` works. Windows 11, **default shell is `cmd.exe`** — separate commands with
   `&`, not `;`. Node and Git are on PATH; the `python` on PATH is a broken uv shim, use
   `C:\Users\Kieran\AppData\Local\Programs\Python\Python312\python.exe` if you need Python.
-- Tailscale: Mac `100.98.99.110`, PC `100.69.103.126`. **The link is DERP-relayed via
+- Tailscale: the tailnet addresses are in the gitignored `notables.local`
+  (`NOTABLES_PC_HOST`); never commit them. **The link is DERP-relayed via
   Chicago, not direct** — the PC sits behind a campus symmetric NAT
-  (`MappingVariesByDestIP: true`, LAN `10.72.x`, no port mapping), which Tailscale
+  (`MappingVariesByDestIP: true`, no port mapping), which Tailscale
   cannot hole-punch. Budget ~1.6 MB/s and ~50 ms RTT for everything crossing the
   network, and prefer fewer, smaller, compressed round trips. Verified 2026-09-05.
 - `claude -p "prompt"` on the PC works and takes ~6 s round trip over ssh.

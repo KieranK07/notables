@@ -6,7 +6,8 @@ then update every implementation.
 
 ## Endpoints
 
-Base URL: `http://100.69.103.126:8787` (Windows PC over Tailscale)
+Base URL: `http://<pc-ip>:8787` (Windows PC over Tailscale; `<pc-ip>` is its tailnet
+address, kept in the gitignored `notables.local` as `NOTABLES_PC_HOST`)
 Auth: `Authorization: Bearer <token>` on every request. Token lives in
 `~/.notables/token` on the Mac and `%USERPROFILE%\.notables\token` on the PC.
 
@@ -19,7 +20,7 @@ The Mac uploads the **audio**; the PC does the authoritative transcription on it
   "recordedAt":  "2026-09-04T13:05:00Z",       // ISO8601 UTC, recording START
   "durationSec": 3312,
   "locale":      "en_US",
-  "device":      "kierans-macbook-air",
+  "device":      "macbook-air",
   "audioBytes":  29344512,        // so the server can verify the upload completed
   "audioFormat": "m4a",           // AAC, 16 kHz mono
   "draftTranscript": "Welcome to Chemistry 101…"  // the Mac's live on-device pass

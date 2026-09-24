@@ -89,13 +89,13 @@ files stay on disk. Retry it:
 ```bash
 TOKEN=$(cat ~/.notables/token)
 curl -s -X POST -H "Authorization: Bearer $TOKEN" \
-  http://100.69.103.126:8787/api/note/<id>/reprocess
+  http://<pc-ip>:8787/api/note/<id>/reprocess
 ```
 
 List what needs retrying:
 
 ```bash
-curl -s -H "Authorization: Bearer $TOKEN" http://100.69.103.126:8787/api/notes \
+curl -s -H "Authorization: Bearer $TOKEN" http://<pc-ip>:8787/api/notes \
  | python3 -c "import json,sys; [print(n['id'], n.get('error')) for n in json.load(sys.stdin)['notes'] if n['state']=='failed']"
 ```
 
@@ -119,7 +119,7 @@ ssh pc 'wscript.exe //B //Nologo C:\Users\Kieran\Notables\server\start-hidden.vb
 or, without stopping anything:
 
 ```bash
-curl -s -X POST -H "Authorization: Bearer $TOKEN" http://100.69.103.126:8787/api/reindex
+curl -s -X POST -H "Authorization: Bearer $TOKEN" http://<pc-ip>:8787/api/reindex
 ```
 
 The rebuild reads the YAML front matter of every `Notes\**\*.md`, re-derives the course

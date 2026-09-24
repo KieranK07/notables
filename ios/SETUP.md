@@ -14,7 +14,7 @@ at the bottom for the honest reason.
 
 | | |
 |---|---|
-| **Tailscale on the iPhone** | Install *Tailscale* from the App Store, sign in with the same account as the Mac and PC, and make sure the VPN toggle is **on**. The PC lives at `100.69.103.126`, which is only reachable over Tailscale. |
+| **Tailscale on the iPhone** | Install *Tailscale* from the App Store, sign in with the same account as the Mac and PC, and make sure the VPN toggle is **on**. The PC's tailnet IP (written `<pc-ip>` below; the Tailscale app lists it) is only reachable over Tailscale. |
 | **The PC is awake** | The note server runs on the Windows PC. If the PC is asleep, capture fails. |
 | **The token** | The shared secret the server checks on every request. Read yours with `cat ~/.notables/token` on the Mac; it must be byte-identical to `%USERPROFILE%\.notables\token` on the PC. If neither exists yet, make one — `openssl rand -hex 24` — and write the same string to both files. Below it is written as `<YOUR_NOTE_SERVER_TOKEN>`; substitute the real value. |
 
@@ -26,7 +26,7 @@ at the bottom for the honest reason.
 **Quick reachability test before you build anything.** In Safari on the iPhone, open:
 
 ```
-http://100.69.103.126:8787/api/health
+http://<pc-ip>:8787/api/health
 ```
 
 You should get a line of JSON starting `{"ok":true,...}`. If Safari can't connect, fix
@@ -78,7 +78,7 @@ This is the action that does the work.
 1. Search `Get Contents of URL` → tap it.
 2. In the **URL** field type exactly:
    ```
-   http://100.69.103.126:8787/api/capture
+   http://<pc-ip>:8787/api/capture
    ```
    (`http`, not `https`. Tailscale is the encryption layer here.)
 3. Tap the expand arrow (**⌄**) to reveal *Method*, *Headers*, and *Request Body*.
@@ -167,7 +167,7 @@ The server replies `{"ok":true,"id":"…","state":"queued"}` on success. We chec
 Dictate Text                          (Stop Listening: After Pause)
 Date
 Format Date                           (ISO 8601, with time)
-Get Contents of URL                   POST http://100.69.103.126:8787/api/capture
+Get Contents of URL                   POST http://<pc-ip>:8787/api/capture
                                       Headers:  Authorization: Bearer <token>
                                       JSON body: text / kind / capturedAt / device
 Get Dictionary Value  "state"  in  Contents of URL
@@ -211,7 +211,7 @@ Press and hold the Action Button to fire it.
 The first run is the slow one. iOS will ask, roughly in this order:
 
 1. **Speech recognition / microphone** — allow it. Dictate Text needs both.
-2. **"Notables Capture" wants to send data to 100.69.103.126** — tap **Allow**, or
+2. **"Notables Capture" wants to send data to <pc-ip>** — tap **Allow**, or
    **Always Allow** if offered, so it stops asking.
 
 Answer these once and subsequent runs are silent. Do the first run somewhere you can look at
@@ -228,7 +228,7 @@ the screen, not walking out of a lecture.
    - on the PC, `C:\Users\Kieran\Notables\Captures\2026-09.md`, or
    - from the Mac:
      ```sh
-     curl -s http://100.69.103.126:8787/api/notes \
+     curl -s http://<pc-ip>:8787/api/notes \
        -H "Authorization: Bearer $(cat ~/.notables/token)" | python3 -m json.tool
      ```
 
