@@ -28,7 +28,7 @@ joined by Tailscale. All LLM work runs on Kieran's **Claude subscription** via t
 │   │            key terms · notes · action items                  │
 │   ├─ writes Notes/<Course>/<date> — <Topic>.md                   │
 │   └─ pushes an SSE event ──► every connected client              │
-│  Vault: C:\Users\Kieran\Notables                                 │
+│  Vault: %USERPROFILE%\Notables                                   │
 └──────────────────────────▲───────────────────────────────────────┘
                            │ POST /api/capture
 ┌─ iPhone 17 Pro ──────────┴───────────────────────────────────────┐

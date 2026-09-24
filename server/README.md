@@ -4,8 +4,8 @@ The Windows half of Notables. Node stdlib only — no `package.json`, no `npm in
 Wire protocol: [`docs/PROTOCOL.md`](../docs/PROTOCOL.md).
 
 - Authored on the Mac in `server/`, deployed with `scripts/deploy-server.sh`.
-- Lives on the PC at `C:\Users\Kieran\Notables\server`.
-- Vault at `C:\Users\Kieran\Notables`.
+- Lives on the PC at `%USERPROFILE%\Notables\server`.
+- Vault at `%USERPROFILE%\Notables`.
 - Listens on `0.0.0.0:8787`; the firewall rule only admits `100.64.0.0/10` (Tailscale).
 - The AI pass shells out to `claude.exe -p` on Kieran's **subscription**. No API key.
 
@@ -46,9 +46,9 @@ profile, so a SYSTEM task could not run the AI pass). It has two triggers:
 From the Mac (`ssh pc` runs `cmd.exe`, so separate commands with `&`, not `;`):
 
 ```bash
-ssh pc 'wscript.exe //B //Nologo C:\Users\Kieran\Notables\server\start-hidden.vbs'   # start
-ssh pc 'C:\Users\Kieran\Notables\server\stop-server.cmd'                             # stop
-ssh pc 'C:\Users\Kieran\Notables\server\restart-server.cmd'                          # restart
+ssh pc 'wscript.exe //B //Nologo %USERPROFILE%\Notables\server\start-hidden.vbs'   # start
+ssh pc '%USERPROFILE%\Notables\server\stop-server.cmd'                             # stop
+ssh pc '%USERPROFILE%\Notables\server\restart-server.cmd'                          # restart
 ssh pc 'schtasks /query /tn "Notables Note Server" /v /fo list'                      # task status
 ssh pc 'schtasks /run   /tn "Notables Note Server"'                                  # force a start
 ssh pc 'schtasks /change /tn "Notables Note Server" /disable'                         # stop the watchdog
@@ -60,15 +60,15 @@ minutes. To keep it down, disable the task first.
 To run it in the foreground for debugging (Ctrl-C to quit):
 
 ```bash
-ssh pc 'C:\Users\Kieran\Notables\server\stop-server.cmd & node C:\Users\Kieran\Notables\server\note-server.js'
+ssh pc '%USERPROFILE%\Notables\server\stop-server.cmd & node %USERPROFILE%\Notables\server\note-server.js'
 ```
 
 ## Logs
 
 | file | what |
 |---|---|
-| `C:\Users\Kieran\Notables\logs\server.log` | the server's own log; rotates to `server.log.1` at 5 MB |
-| `C:\Users\Kieran\Notables\logs\stdout.log` | raw stdout/stderr from the launcher — read this when the process won't even start |
+| `%USERPROFILE%\Notables\logs\server.log` | the server's own log; rotates to `server.log.1` at 5 MB |
+| `%USERPROFILE%\Notables\logs\stdout.log` | raw stdout/stderr from the launcher — read this when the process won't even start |
 
 ```bash
 ssh pc 'powershell -NoProfile -Command "Get-Content $env:USERPROFILE\Notables\logs\server.log -Tail 40"'
@@ -112,8 +112,8 @@ back to reading the transcript file the note points at, so it still works.
 are the source of truth. If the index is corrupted or deleted:
 
 ```bash
-ssh pc 'C:\Users\Kieran\Notables\server\stop-server.cmd & node C:\Users\Kieran\Notables\server\note-server.js --rebuild-index'
-ssh pc 'wscript.exe //B //Nologo C:\Users\Kieran\Notables\server\start-hidden.vbs'
+ssh pc '%USERPROFILE%\Notables\server\stop-server.cmd & node %USERPROFILE%\Notables\server\note-server.js --rebuild-index'
+ssh pc 'wscript.exe //B //Nologo %USERPROFILE%\Notables\server\start-hidden.vbs'
 ```
 
 or, without stopping anything:

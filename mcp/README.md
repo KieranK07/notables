@@ -5,14 +5,14 @@ notes written from recorded lectures, and the verbatim transcripts — searchabl
 and re-syncable from inside a conversation.
 
 ```
-claude mcp add notables -s user -- node /Users/kierankelly/Desktop/Notables/mcp/notables-mcp.js
+claude mcp add notables -s user -- node /path/to/Notables/mcp/notables-mcp.js
 ```
 
 `-s user` puts it in every project, not just this repo. On the PC, after
 `scripts/deploy-server.sh` has copied it over:
 
 ```
-claude mcp add notables -s user -- node C:\Users\Kieran\Notables\mcp\notables-mcp.js
+claude mcp add notables -s user -- node %USERPROFILE%\Notables\mcp\notables-mcp.js
 ```
 
 Check it with `claude mcp get notables`. Remove it with `claude mcp remove notables -s user`.

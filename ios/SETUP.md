@@ -225,7 +225,7 @@ the screen, not walking out of a lecture.
 2. Within a second you should get a banner: **Captured: chem homework problems 12 to 20 due friday**.
 3. Give the PC ~10 seconds to run the Claude pass, then check it landed. Any of:
    - the Mac app's todo list (it's live over SSE and updates itself), or
-   - on the PC, `C:\Users\Kieran\Notables\Captures\2026-09.md`, or
+   - on the PC, `%USERPROFILE%\Notables\Captures\2026-09.md`, or
    - from the Mac:
      ```sh
      curl -s http://<pc-ip>:8787/api/notes \

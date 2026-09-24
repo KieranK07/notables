@@ -237,7 +237,7 @@ the model in ~5 GB and runs roughly 10–20× realtime. Requirements:
 - Keep whisper's own segment timestamps in the transcript file as a sidecar
   (`Transcripts/<Course>/<name>.json`) so a note can be traced back to the audio.
 
-## Vault layout — `C:\Users\Kieran\Notables`
+## Vault layout — `%USERPROFILE%\Notables`
 ```
 Notes/<Course>/<YYYY-MM-DD> — <Topic>.md      AI pass (summary, key terms, todos)
 Transcripts/<Course>/<YYYY-MM-DD> — <Topic>.txt   full verbatim text (whisper large-v3)

@@ -81,7 +81,7 @@ Content-Type: application/json; charset=utf-8
 {"ok":true,"id":"46dd777b-4b83-4167-b73d-4f368fcfa9d8","state":"queued"}
 ```
 
-~10 s later, `C:\Users\Kieran\Notables\Captures\2026-09.md`:
+~10 s later, `%USERPROFILE%\Notables\Captures\2026-09.md`:
 
 ```markdown
 ## 2026-09-04 16:34:05Z — homework
@@ -157,7 +157,7 @@ early. Speak after the listening indicator appears. If it keeps cutting you off,
 
 **Banner says `NOT captured — …could not write to the vault…`.**
 The PC's vault path is unwritable (external drive missing, permissions). Server-side; check
-`C:\Users\Kieran\Notables` and `logs/server.log`.
+`%USERPROFILE%\Notables` and `logs/server.log`.
 
 **Captured fine, but nothing shows up in the vault.**
 The `202` only means "queued" — Claude runs afterwards. Wait ~10 s. If it still hasn't

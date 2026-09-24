@@ -8,7 +8,7 @@ bench/
 # --- Recordings, transcripts, notes -----------------------------------------
 # Nothing this system produces is source. Lecture audio and its transcripts are
 # recordings of identifiable people; the note vault is personal coursework.
-# The real vault lives on the PC (C:\Users\Kieran\Notables), but keep these
+# The real vault lives on the PC (%USERPROFILE%\Notables), but keep these
 # patterns so a stray copy can never be staged by accident.
 Recordings/
 Outbox/
