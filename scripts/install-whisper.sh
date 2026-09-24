@@ -4,19 +4,26 @@
 #
 #   ./scripts/install-whisper.sh
 #
-# Creates C:\Users\Kieran\.notables-venv (deliberately OUTSIDE the vault) with
+# Creates %USERPROFILE%\.notables-venv on the PC (deliberately OUTSIDE the vault) with
 # faster-whisper + the CUDA runtime wheels, then verifies CUDA actually engages and
 # pre-downloads large-v3 (~3 GB) so the first real lecture doesn't wait for it.
 #
 # The `python` on the PC's PATH is a broken uv shim - the real interpreter is used
-# explicitly below.
+# explicitly below. Override it with NOTABLES_PC_PYTHON.
+#
+# Paths default to the PC's own %USERPROFILE%. Set NOTABLES_PC_HOME in the
+# gitignored notables.local (or the environment) to use a different directory.
 set -euo pipefail
 
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+[ -f "$REPO/notables.local" ] && . "$REPO/notables.local"
 HOST="${NOTABLES_PC:-pc}"
-PY='C:\Users\Kieran\AppData\Local\Programs\Python\Python312\python.exe'
-VENV='C:\Users\Kieran\.notables-venv'
-VENVPY="$VENV"'\Scripts\python.exe'
-MODELS='C:\Users\Kieran\.notables-models'
+PC_HOME="${NOTABLES_PC_HOME:-$(ssh "$HOST" 'echo %USERPROFILE%' | tr -d '\r')}"
+case "$PC_HOME" in ''|*%*) echo "could not read %USERPROFILE% from $HOST; set NOTABLES_PC_HOME" >&2; exit 1 ;; esac
+PY="${NOTABLES_PC_PYTHON:-$PC_HOME\AppData\Local\Programs\Python\Python312\python.exe}"
+VENV="$PC_HOME\.notables-venv"
+VENVPY="$VENV\Scripts\python.exe"
+MODELS="$PC_HOME\.notables-models"
 
 echo "==> GPU"
 ssh "$HOST" 'C:\Windows\System32\nvidia-smi.exe --query-gpu=name,memory.total,driver_version --format=csv,noheader'

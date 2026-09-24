@@ -12,8 +12,6 @@
 set -euo pipefail
 
 HOST="${NOTABLES_PC:-pc}"
-REMOTE_DIR='C:\Users\Kieran\Notables\server'
-REMOTE_DIR_FWD='C:/Users/Kieran/Notables/server'
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$REPO/server"
 # The PC's tailnet address lives in the gitignored notables.local at the repo root
@@ -32,6 +30,14 @@ for a in "$@"; do
 done
 
 [ -d "$SRC" ] || { echo "no server/ directory at $SRC" >&2; exit 1; }
+
+# Install root on the PC: NOTABLES_PC_HOME from notables.local, else the PC's own
+# %USERPROFILE%. The server resolves its vault the same way (server/lib/config.js).
+PC_HOME="${NOTABLES_PC_HOME:-$(ssh "$HOST" 'echo %USERPROFILE%' | tr -d '\r')}"
+case "$PC_HOME" in ''|*%*) echo "could not read %USERPROFILE% from $HOST; set NOTABLES_PC_HOME" >&2; exit 1 ;; esac
+PC_HOME_FWD="${PC_HOME//\\//}"
+REMOTE_DIR="$PC_HOME\Notables\server"
+REMOTE_DIR_FWD="$PC_HOME_FWD/Notables/server"
 
 echo "==> syntax-checking"
 for f in "$SRC"/note-server.js "$SRC"/lib/*.js; do node --check "$f"; done
@@ -60,15 +66,15 @@ scp -q "$STAGE"/python/*.py "$HOST:$REMOTE_DIR_FWD/python/"
 # on the Mac. It is a client of the HTTP API like any other, so it is not part of the
 # server proper - it just has to exist on both machines.
 if [ -d "$REPO/mcp" ]; then
-  echo "==> copying mcp/ -> $HOST:C:\\Users\\Kieran\\Notables\\mcp"
-  ssh "$HOST" 'if not exist "C:\Users\Kieran\Notables\mcp" mkdir "C:\Users\Kieran\Notables\mcp"'
-  scp -q "$REPO"/mcp/* "$HOST:C:/Users/Kieran/Notables/mcp/"
+  echo "==> copying mcp/ -> $HOST:$PC_HOME\\Notables\\mcp"
+  ssh "$HOST" "if not exist \"$PC_HOME\\Notables\\mcp\" mkdir \"$PC_HOME\\Notables\\mcp\""
+  scp -q "$REPO"/mcp/* "$HOST:$PC_HOME_FWD/Notables/mcp/"
 fi
 
 if [ "$INSTALL" = 1 ]; then
   echo "==> installing the scheduled task + firewall rule"
-  scp -q "$REPO/scripts/install-service.ps1" "$HOST:C:/Users/Kieran/notables-install-service.ps1"
-  ssh "$HOST" 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\Kieran\notables-install-service.ps1'
+  scp -q "$REPO/scripts/install-service.ps1" "$HOST:$PC_HOME_FWD/notables-install-service.ps1"
+  ssh "$HOST" "powershell -NoProfile -ExecutionPolicy Bypass -File \"$PC_HOME\\notables-install-service.ps1\""
 fi
 
 if [ "$RESTART" = 1 ]; then
