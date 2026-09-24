@@ -5,7 +5,7 @@ there with whisper large-v3 on the GPU, and has Claude file the result into a Ma
 as a note with a summary, key terms and dated homework items. The finished note appears back
 in the Mac app about seven minutes later without anyone touching anything.
 
-All the AI runs on my **Claude subscription** through the `claude` CLI. There is no API key
+All the AI runs on a **Claude subscription** through the `claude` CLI. There is no API key
 in this project, and the server blanks the environment so it can't inherit one.
 
 ```
@@ -21,10 +21,10 @@ Recording a class is easy. Doing anything with the recording is not. An hour of 
 an hour to listen back to, whisper large-v3 on a MacBook Air is slower than realtime and
 cooks the laptop, and every product that will do it for you wants your lecture audio in
 their cloud on a monthly bill. Meanwhile there is an RTX 3060 Ti sitting idle in the next
-room and a Claude subscription I already pay for.
+room and a Claude subscription that is already paid for.
 
 So the laptop only records, the desktop does the expensive part, Claude does the filing, and
-the output is plain Markdown files I still own if I delete all of this tomorrow.
+the output is plain Markdown files that outlive this project if it is deleted tomorrow.
 
 ## What each part is
 
@@ -111,14 +111,24 @@ That's why responses over 4 KB are gzipped, why the phone sends text and not aud
 
 ## Build and install
 
-Prerequisites that genuinely matter: macOS 26 and Xcode 26 (`SpeechAnalyzer` does not exist
-before macOS 26), an NVIDIA GPU with ~5 GB free for large-v3 in float16, Node on the PC, and
-Tailscale on all three devices with `ssh pc` working.
+Prerequisites:
+
+- **Mac:** macOS 26 and Xcode 26 (`SpeechAnalyzer` does not exist before macOS 26), and Node
+  (`deploy-server.sh` syntax-checks the server with it; the MCP bridge runs on it).
+- **PC:** Windows with OpenSSH server, an NVIDIA GPU with ~5 GB free for large-v3 in float16,
+  Node, Python 3.12 from python.org (or set `NOTABLES_PC_PYTHON`), and the `claude` CLI
+  (Claude Code) signed in to the account whose subscription runs the filing pass.
+- **Both:** Tailscale, with `ssh pc` from the Mac landing in a `cmd.exe` shell on the PC.
+
+Point the scripts at the PC first. `notables.local` is gitignored; `build.sh`,
+`deploy-server.sh`, `install-whisper.sh` and the MCP bridge read it.
 
 ```bash
-# Mac app
-cd mac && ./build.sh                 # -> ~/Library/Caches/notables-build/Notables.app
-../scripts/install-mac-app.sh        # copies to /Applications, starts it at login
+echo 'NOTABLES_PC_HOST=<pc-ip>' > notables.local   # at the repo root
+
+# Mac app (mac/build.sh --local builds against localhost instead)
+mac/build.sh                         # -> ~/Library/Caches/notables-build/Notables.app
+./scripts/install-mac-app.sh         # copies to /Applications, starts it at login
 
 # PC, one time: whisper venv, CUDA wheels, large-v3 pre-download
 ./scripts/install-whisper.sh
@@ -132,9 +142,9 @@ the same value to `~/.notables/token` on the Mac and `%USERPROFILE%\.notables\to
 PC. The server re-reads it every ten seconds, so rotating it needs no restart. The firewall
 rule only admits `100.64.0.0/10`, so the port is reachable from the tailnet and nowhere else.
 
-The PC's tailnet address goes in `notables.local` at the repo root
-(`NOTABLES_PC_HOST=<pc-ip>`). It is gitignored; `build.sh`, `deploy-server.sh` and the MCP
-bridge read it.
+The PC scripts install under the PC's `%USERPROFILE%`. Add `NOTABLES_PC_HOME=<dir>` to
+`notables.local` to use a different directory, and `NOTABLES_PC=<ssh alias>` if the PC is not
+`pc` in `~/.ssh/config`.
 
 First launch asks for microphone access. Transcription is on-device — nothing goes to Apple.
 
@@ -154,7 +164,7 @@ straight into the vault.
 | Pending uploads (Mac) | `~/Library/Application Support/Notables/Outbox/` |
 | Shared token | `~/.notables/token` (Mac), `%USERPROFILE%\.notables\token` (PC) |
 | Canvas session cookie | `%USERPROFILE%\.notables\canvas-session.json`, mode 0600, never logged |
-| Note vault (PC) | `C:\Users\Kieran\Notables` |
+| Note vault (PC) | `%USERPROFILE%\Notables` (`NOTABLES_VAULT` overrides) |
 
 The vault is plain Markdown with YAML front matter — `Notes/<Course>/<date> — <Topic>.md`,
 the transcript beside it in `Transcripts/`, whisper's segment timestamps as a JSON sidecar.
@@ -178,17 +188,16 @@ machines. Open the note and press **Retry**, or `POST /api/note/{id}/reprocess`.
 
 ## Status
 
-Working and in daily use on my own hardware, which is also the honest limit of it. Measured
+Working and in daily use on one set of hardware, which is also the honest limit of it. Measured
 on a real 45-minute lecture: 5 min 43 s end to end, of which whisper was 290 s at 9.44×
 realtime and the Claude pass 56 s.
 
 What it is not:
 
-- **Not portable as-is.** `C:\Users\Kieran\...` paths and one Canvas host are baked into
-  the defaults. Everything is env-overridable, but it has never run on anyone else's
-  hardware.
+- **Not portable as-is.** One Canvas host is baked into the defaults. Everything is
+  env-overridable, but it has never run on anyone else's hardware.
 - **Single user, single shared secret.** One bearer token over plain HTTP, with Tailscale
-  doing the encryption. Fine for three of my own devices; not an auth model.
+  doing the encryption. Fine for three devices owned by one person; not an auth model.
 - **No tests, no CI.** Verification has been running it against the live server and reading
   the logs.
 - **Serial by design.** One job at a time — whisper wants the whole GPU — so a queued
